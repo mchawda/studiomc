@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'theme/app_theme.dart';
 import 'router/app_router.dart';
 import 'services/api_client.dart';
+import 'services/bundled_inference_service.dart';
 import 'services/database_service.dart';
 import 'services/inference_service.dart';
 import 'services/process_launcher.dart';
@@ -24,15 +25,24 @@ void main() async {
   // ── Initialize local database ──
   final databaseService = DatabaseService();
 
-  // ── Initialize local inference via Ollama ──
-  final localInference = LocalInferenceService();
-  await localInference.init(preferredModel: settingsService.activeModelId);
+  // ── Initialize bundled inference engine (primary — zero dependencies) ──
+  final bundledInference = BundledInferenceService();
+  await bundledInference.init(preferredModel: settingsService.activeModelId);
 
-  // Only set active model if user doesn't already have one
-  if (!settingsService.hasActiveModel &&
-      localInference.available &&
-      localInference.activeModel != null) {
-    settingsService.activeModelId = localInference.activeModel;
+  // ── Initialize Ollama as optional secondary backend ──
+  final localInference = LocalInferenceService();
+  if (!bundledInference.available) {
+    // Only probe Ollama if bundled engine isn't running
+    await localInference.init(preferredModel: settingsService.activeModelId);
+  }
+
+  // Sync active model to settings
+  if (!settingsService.hasActiveModel) {
+    if (bundledInference.available && bundledInference.activeModel != null) {
+      settingsService.activeModelId = bundledInference.activeModelPath;
+    } else if (localInference.available && localInference.activeModel != null) {
+      settingsService.activeModelId = localInference.activeModel;
+    }
   }
 
   // ── Create per-service API clients (backend optional) ──
@@ -45,12 +55,12 @@ void main() async {
   final hardwareService = HardwareService(supervisorApi);
   final modelManagerService = ModelManagerService(modelManagerApi);
 
-  // Try backend — non-blocking, app works without it
+  // Try Python backend — non-blocking, app works without it
   try {
     await ProcessLauncher.launchBackend();
     await supervisorApi.checkAvailable();
   } catch (_) {
-    logService('main', 'Backend not available — using local Ollama');
+    logService('main', 'Python backend not available — using local engines');
   }
 
   runApp(
@@ -64,6 +74,8 @@ void main() async {
         Provider<SupervisorService>.value(value: supervisorService),
         Provider<DocumentService>.value(value: documentService),
         ChangeNotifierProvider<SettingsService>.value(value: settingsService),
+        ChangeNotifierProvider<BundledInferenceService>.value(
+            value: bundledInference),
         ChangeNotifierProvider<LocalInferenceService>.value(
             value: localInference),
       ],

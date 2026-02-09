@@ -10,6 +10,7 @@ import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/chat_service.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
+import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 import 'package:studiomc_app/widgets/chat/branch_indicator.dart';
@@ -65,6 +66,25 @@ class _ChatScreenState extends State<ChatScreen> {
     _chatId = widget.chatId ?? '';
     _loadMemoryPreference();
     _loadData();
+    // Listen for model changes from LocalInferenceService
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final local = context.read<LocalInferenceService>();
+      local.addListener(_onModelChanged);
+    });
+  }
+
+  void _onModelChanged() {
+    if (!mounted) return;
+    final local = context.read<LocalInferenceService>();
+    if (local.activeModel != null) {
+      final newName = local.humanName(local.activeModel!);
+      if (newName != _modelName) {
+        setState(() {
+          _modelName = newName;
+          _tokPerS = local.tokPerS;
+        });
+      }
+    }
   }
 
   Future<void> _loadMemoryPreference() async {
@@ -76,15 +96,27 @@ class _ChatScreenState extends State<ChatScreen> {
     final db = context.read<DatabaseService>();
     final api = context.read<ApiClient>();
     final settings = context.read<SettingsService>();
+    final bundledInference = context.read<BundledInferenceService>();
     final localInference = context.read<LocalInferenceService>();
 
     try {
-      // Prefer Ollama models (local, no backend needed)
-      if (localInference.available && localInference.activeModel != null) {
-        _modelName = localInference.humanName(localInference.activeModel!);
+      // 1) Bundled engine (primary — zero dependencies)
+      if (bundledInference.available && bundledInference.activeModel != null) {
+        _modelName = bundledInference.humanName(
+            bundledInference.activeModelPath ?? '');
       }
 
-      // Fallback: backend inference service
+      // 2) Ollama fallback
+      if (_modelName.isEmpty && localInference.available) {
+        if (settings.hasActiveModel) {
+          localInference.selectModelByPreference(settings.activeModelId!);
+        }
+        if (localInference.activeModel != null) {
+          _modelName = localInference.humanName(localInference.activeModel!);
+        }
+      }
+
+      // 3) Backend inference service fallback
       if (_modelName.isEmpty && api.isAvailable) {
         try {
           final inference = context.read<InferenceService>();
@@ -95,7 +127,7 @@ class _ChatScreenState extends State<ChatScreen> {
         } catch (_) {}
       }
 
-      // Fallback: friendly name from settings
+      // 4) Friendly name from settings
       if (_modelName.isEmpty && settings.hasActiveModel) {
         _modelName = _humanModelName(settings.activeModelId!);
       }
@@ -207,6 +239,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _streamSub?.cancel();
     _scrollController.dispose();
+    try {
+      context.read<LocalInferenceService>().removeListener(_onModelChanged);
+    } catch (_) {}
     super.dispose();
   }
 
@@ -358,6 +393,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_isStreaming || text.trim().isEmpty) return;
 
     final db = context.read<DatabaseService>();
+    final bundledInference = context.read<BundledInferenceService>();
     final localInference = context.read<LocalInferenceService>();
 
     // Create chat if needed
@@ -404,10 +440,12 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    // Check Ollama is available
-    if (!localInference.available) {
+    // Check inference is available (bundled engine or Ollama)
+    final useBundled = bundledInference.available;
+    final useOllama = !useBundled && localInference.available;
+    if (!useBundled && !useOllama) {
       setState(() {
-        _error = 'Ollama not found. Install from ollama.com';
+        _error = 'No inference engine available. Download a model first.';
       });
       return;
     }
@@ -441,9 +479,11 @@ class _ChatScreenState extends State<ChatScreen> {
       final buffer = StringBuffer();
       int tokenCount = 0;
 
-      _streamSub = localInference
-          .streamChat(messages: messagesPayload)
-          .listen(
+      final tokenStream = useBundled
+          ? bundledInference.streamChat(messages: messagesPayload)
+          : localInference.streamChat(messages: messagesPayload);
+
+      _streamSub = tokenStream.listen(
         (token) {
           buffer.write(token);
           tokenCount++;
@@ -468,8 +508,8 @@ class _ChatScreenState extends State<ChatScreen> {
         onDone: () async {
           final finalContent = buffer.toString();
 
-          // Update tok/s from local inference
-          _tokPerS = localInference.tokPerS;
+          // Update tok/s from whichever engine was used
+          _tokPerS = useBundled ? bundledInference.tokPerS : localInference.tokPerS;
 
           // Save to DB
           await db.insertMessage({

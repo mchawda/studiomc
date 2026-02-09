@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:studiomc_app/services/document_service.dart';
+import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
 import 'package:studiomc_app/services/settings_service.dart';
@@ -96,10 +97,35 @@ class _ChatInputState extends State<ChatInput> {
   Future<void> _loadModels() async {
     setState(() => _modelsLoading = true);
     try {
+      final bundledInference = context.read<BundledInferenceService>();
       final localInference = context.read<LocalInferenceService>();
 
+      // 1) Bundled engine models (GGUF files on disk)
+      if (bundledInference.localModels.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _models = bundledInference.localModels
+                .map((path) => <String, dynamic>{
+                      'id': path,
+                      'name': bundledInference.humanName(path),
+                    })
+                .toList();
+            _modelsLoading = false;
+            if (_selectedModelId == null && _models.isNotEmpty) {
+              _selectedModelId = _models.first['id'] as String?;
+              _selectedModelName = _models.first['name'] as String?;
+            }
+            if (widget.currentModelName != null &&
+                widget.currentModelName!.isNotEmpty) {
+              _selectedModelName = widget.currentModelName;
+            }
+          });
+        }
+        return;
+      }
+
+      // 2) Ollama models (optional)
       if (localInference.available && localInference.models.isNotEmpty) {
-        // Use Ollama models
         if (mounted) {
           setState(() {
             _models = localInference.models
@@ -113,7 +139,6 @@ class _ChatInputState extends State<ChatInput> {
               _selectedModelId = _models.first['id'] as String?;
               _selectedModelName = _models.first['name'] as String?;
             }
-            // Use parent-provided name if available
             if (widget.currentModelName != null &&
                 widget.currentModelName!.isNotEmpty) {
               _selectedModelName = widget.currentModelName;
@@ -123,7 +148,7 @@ class _ChatInputState extends State<ChatInput> {
         return;
       }
 
-      // Fallback: try backend inference service
+      // 3) Backend inference service fallback
       final models = await InferenceService().getModels();
       if (mounted) {
         setState(() {
@@ -438,10 +463,15 @@ class _ChatInputState extends State<ChatInput> {
           _selectedModelName =
               model['name'] as String? ?? modelId;
         });
-        // Notify local inference of model switch
+        // Switch model on the active engine
         try {
-          final localInference = context.read<LocalInferenceService>();
-          localInference.selectModel(modelId);
+          final bundledInference = context.read<BundledInferenceService>();
+          if (bundledInference.available) {
+            bundledInference.switchModel(modelId);
+          } else {
+            final localInference = context.read<LocalInferenceService>();
+            localInference.selectModel(modelId);
+          }
         } catch (_) {}
         widget.onModelChanged?.call(modelId);
       },

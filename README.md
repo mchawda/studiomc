@@ -48,18 +48,21 @@ Studiomc is a desktop AI assistant that runs large language models entirely on y
 
 ## Quick Start
 
-### Prerequisites
-
-- [Ollama](https://ollama.com) installed (Studiomc auto-detects it)
+**No prerequisites. No Ollama. No Python. Just install and chat.**
 
 ### Install from Release
 
 1. Download the latest `.dmg` from [Releases](https://github.com/mchawda/studiomc/releases/latest)
 2. Open the DMG and drag **Studiomc** to Applications
 3. Launch Studiomc — it scans your hardware and recommends a model
-4. You're chatting in under 2 minutes
+4. The model downloads from HuggingFace automatically
+5. You're chatting in under 2 minutes
 
 > **Note:** The app is currently unsigned. On first launch, right-click the app and select "Open" to bypass macOS Gatekeeper.
+
+### Optional: Ollama / LM Studio
+
+If you already have [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) installed, Studiomc auto-detects them and adds their models to your model list. No configuration needed.
 
 ### Build from Source
 
@@ -92,9 +95,10 @@ Flutter App ── HTTP/WS ──▶ Local Supervisor
 ```
 
 - **Frontend:** Flutter (Dart) — macOS, Windows, iOS, Android
-- **Backend:** Python FastAPI — embedded runtime, users never touch it
+- **Inference:** Bundled llama.cpp engine (Metal GPU acceleration), with optional Ollama / LM Studio / frontier API backends
+- **Models:** Downloaded from HuggingFace on demand (GGUF format)
+- **Backend:** Python FastAPI — embedded runtime for advanced features (document search, reasoning)
 - **Storage:** SQLite + filesystem
-- **Inference:** Ollama, LM Studio, built-in AirLLM engine, OpenAI-compatible APIs
 
 ## Project Structure
 
