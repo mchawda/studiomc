@@ -1,0 +1,63 @@
+{
+  "scanResult": {
+    "gpu": {
+      "name": "Apple M2 Pro",
+      "vramMb": 16384,
+      "detected": true
+    },
+    "ramMb": 16384,
+    "disk": {
+      "type": "nvme",
+      "readMbps": 2840
+    },
+    "cpuName": "Apple M2 Pro",
+    "cpuCores": 10,
+    "hwFingerprint": "m2pro-16gb-nvme"
+  },
+  "recommendations": [
+    {
+      "modelId": "llama-3.2-8b-q4",
+      "name": "Llama 3.2 8B",
+      "sizeLabel": "compressed model, 4.2 GB",
+      "paramsBillion": 8,
+      "diskBytes": 4509715660,
+      "predictedTokPerS": 28.5,
+      "predictedTtftMs": 850,
+      "speedRating": "fast",
+      "explanation": "This model will feel responsive on your machine.",
+      "isRecommended": true
+    },
+    {
+      "modelId": "mistral-7b-q4",
+      "name": "Mistral 7B",
+      "sizeLabel": "compressed model, 3.8 GB",
+      "paramsBillion": 7,
+      "diskBytes": 4080218931,
+      "predictedTokPerS": 32.1,
+      "predictedTtftMs": 720,
+      "speedRating": "fast",
+      "explanation": "Fast and lightweight. Great for everyday chat.",
+      "isRecommended": false
+    },
+    {
+      "modelId": "llama-3.2-70b-q4",
+      "name": "Llama 3.2 70B",
+      "sizeLabel": "compressed model, 38.5 GB",
+      "paramsBillion": 70,
+      "diskBytes": 41337069363,
+      "predictedTokPerS": 3.2,
+      "predictedTtftMs": 4200,
+      "speedRating": "slow",
+      "explanation": "Smarter but slower. Runs from disk on your machine.",
+      "isRecommended": false
+    }
+  ],
+  "downloadProgress": {
+    "modelId": "llama-3.2-8b-q4",
+    "bytesDownloaded": 2147483648,
+    "bytesTotal": 4509715660,
+    "percentComplete": 47.6,
+    "etaSeconds": 42,
+    "status": "downloading"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "chats": [
+    {
+      "id": "chat-001",
+      "title": "Help me write a cover letter",
+      "modelId": "llama-3.2-8b-q4",
+      "mode": "writing",
+      "createdAt": "2026-02-06T10:15:00Z",
+      "updatedAt": "2026-02-06T10:32:00Z",
+      "isPinned": true
+    },
+    {
+      "id": "chat-002",
+      "title": "Python async patterns",
+      "modelId": "llama-3.2-8b-q4",
+      "mode": "coding",
+      "createdAt": "2026-02-05T16:45:00Z",
+      "updatedAt": "2026-02-05T17:12:00Z",
+      "isPinned": false
+    },
+    {
+      "id": "chat-003",
+      "title": "Explain quantum computing",
+      "modelId": "llama-3.2-8b-q4",
+      "mode": "default",
+      "createdAt": "2026-02-04T09:00:00Z",
+      "updatedAt": "2026-02-04T09:28:00Z",
+      "isPinned": false
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-001",
+      "chatId": "chat-001",
+      "role": "system",
+      "content": "You are a private local assistant specializing in writing. Help the user craft clear, professional text.",
+      "tokens": 22,
+      "createdAt": "2026-02-06T10:15:00Z",
+      "parentMessageId": null
+    },
+    {
+      "id": "msg-002",
+      "chatId": "chat-001",
+      "role": "user",
+      "content": "I need a cover letter for a senior product designer role at a tech startup. I have 8 years of experience in UX design, led a team of 5, and shipped products used by 2M+ users.",
+      "tokens": 45,
+      "createdAt": "2026-02-06T10:15:30Z",
+      "parentMessageId": null
+    },
+    {
+      "id": "msg-003",
+      "chatId": "chat-001",
+      "role": "assistant",
+      "content": "Here's a cover letter draft tailored to your experience:\n\n---\n\nDear Hiring Manager,\n\nI'm writing to express my interest in the Senior Product Designer role. With 8 years of experience in UX design and a track record of leading teams that ship products reaching millions of users, I'm excited about the opportunity to bring my expertise to your team.\n\nIn my current role, I lead a team of 5 designers, where I've established design systems, facilitated cross-functional collaboration, and driven user research that directly shaped product decisions. Our work has reached over 2 million users, and I take pride in balancing business goals with genuine user needs.\n\nI'm particularly drawn to the startup environment where design decisions have outsized impact. I thrive in fast-paced settings where I can contribute not just to the UI, but to the overall product strategy.\n\nI'd welcome the chance to discuss how my experience aligns with your team's goals.\n\nBest regards,\n[Your Name]\n\n---\n\nWant me to adjust the tone, add specific achievements, or tailor it to a particular company?",
+      "tokens": 198,
+      "createdAt": "2026-02-06T10:15:45Z",
+      "parentMessageId": null
+    }
+  ],
+  "activeModel": {
+    "modelId": "llama-3.2-8b-q4",
+    "name": "Llama 3.2 8B",
+    "speedRating": "fast",
+    "tokPerS": 28.5,
+    "ttftMs": 850
+  },
+  "groundedness": {
+    "percentGrounded": 87,
+    "sources": [
+      {
+        "documentId": "doc-001",
+        "filename": "company-research.pdf",
+        "chunkIndex": 3,
+        "snippet": "The company focuses on developer tools with a team-first culture...",
+        "relevanceScore": 0.92
+      },
+      {
+        "documentId": "doc-002",
+        "filename": "job-posting.md",
+        "chunkIndex": 1,
+        "snippet": "Looking for a Senior Product Designer with 5+ years experience...",
+        "relevanceScore": 0.88
+      }
+    ],
+    "hasNoSource": false
+  },
+  "investigateTrace": [
+    {
+      "type": "search",
+      "description": "Search: 'product designer requirements' in Documents",
+      "result": "Found 3 relevant chunks",
+      "durationMs": 45
+    },
+    {
+      "type": "open",
+      "description": "Opened: job-posting.md (section 1-2)",
+      "result": "Extracted role requirements and company values",
+      "durationMs": 12
+    },
+    {
+      "type": "cite",
+      "description": "Cited: job-posting.md, company-research.pdf",
+      "result": "2 sources grounding the answer",
+      "durationMs": 8
+    }
+  ]
+}

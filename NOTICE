@@ -1,0 +1,33 @@
+Studiomc
+Copyright 2024-2026 Studiomc Contributors
+
+This product includes software developed by the following projects:
+
+- Flutter SDK (BSD-3-Clause) - https://flutter.dev
+- go_router (BSD-3-Clause) - https://pub.dev/packages/go_router
+- google_fonts (Apache-2.0) - https://pub.dev/packages/google_fonts
+- FastAPI (MIT) - https://github.com/tiangolo/fastapi
+- Uvicorn (BSD-3-Clause) - https://github.com/encode/uvicorn
+- Pydantic (MIT) - https://github.com/pydantic/pydantic
+- aiosqlite (MIT) - https://github.com/omnilib/aiosqlite
+- httpx (BSD-3-Clause) - https://github.com/encode/httpx
+- huggingface_hub (Apache-2.0) - https://github.com/huggingface/huggingface_hub
+- PyPDF2 (BSD-3-Clause) - https://github.com/py-pdf/pypdf
+- tiktoken (MIT) - https://github.com/openai/tiktoken
+- numpy (BSD-3-Clause) - https://github.com/numpy/numpy
+- psutil (BSD-3-Clause) - https://github.com/giampaolo/psutil
+- platformdirs (MIT) - https://github.com/platformdirs/platformdirs
+- websockets (BSD-3-Clause) - https://github.com/python-websockets/websockets
+- python-multipart (Apache-2.0) - https://github.com/andrew-d/python-multipart
+- AirLLM (Apache-2.0) - https://github.com/lyogavin/airllm
+- PyTorch (BSD-3-Clause) - https://github.com/pytorch/pytorch
+- Transformers (Apache-2.0) - https://github.com/huggingface/transformers
+- Accelerate (Apache-2.0) - https://github.com/huggingface/accelerate
+- safetensors (Apache-2.0) - https://github.com/huggingface/safetensors
+- sentencepiece (Apache-2.0) - https://github.com/google/sentencepiece
+- sentence-transformers (Apache-2.0) - https://github.com/UKPLab/sentence-transformers
+- Space Grotesk font (OFL-1.1) - https://fonts.google.com/specimen/Space+Grotesk
+- Inter font (OFL-1.1) - https://fonts.google.com/specimen/Inter
+- JetBrains Mono font (OFL-1.1) - https://fonts.google.com/specimen/JetBrains+Mono
+
+This notice satisfies the requirements of Apache License 2.0 Section 4(d), which requires that any "NOTICE" text file from the Work be included verbatim in any derivative works.

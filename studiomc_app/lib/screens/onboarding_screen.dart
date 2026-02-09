@@ -1,0 +1,560 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
+import '../models/app_models.dart';
+import '../services/settings_service.dart';
+import '../widgets/common/studiomc_logo.dart';
+
+/// Onboarding: Welcome → Scan → Recommend → Download → First Chat.
+/// Fully automatic. No backend required for scan + recommend.
+/// The app decides everything — users never see complexity.
+class OnboardingScreen extends StatefulWidget {
+  const OnboardingScreen({super.key});
+
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
+}
+
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  OnboardingStep _step = OnboardingStep.welcome;
+
+  // Local hardware info (no backend needed)
+  int _ramMb = 0;
+  String _cpuName = '';
+  int _cpuCores = 0;
+  String _gpuName = '';
+
+  // Auto-selected model
+  _RecommendedModel? _recommended;
+
+  // Download
+  double _downloadProgress = 0;
+  String _downloadStatus = '';
+  String? _downloadError;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              theme.colorScheme.primary.withValues(alpha: 0.05),
+              theme.colorScheme.primary.withValues(alpha: 0.15),
+            ],
+          ),
+        ),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 520),
+            margin: const EdgeInsets.all(24),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: _buildStep(theme),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStep(ThemeData theme) {
+    switch (_step) {
+      case OnboardingStep.welcome:
+        return _buildWelcome(theme);
+      case OnboardingStep.scan:
+        return _buildScan(theme);
+      case OnboardingStep.recommend:
+        return _buildRecommend(theme);
+      case OnboardingStep.download:
+        return _buildDownload(theme);
+      case OnboardingStep.firstChat:
+        return _buildFirstChat(theme);
+    }
+  }
+
+  // ── Step 1: Welcome ──
+
+  Widget _buildWelcome(ThemeData theme) {
+    return Column(
+      key: const ValueKey('welcome'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const StudiomcLogo(size: 48),
+        const SizedBox(height: 24),
+        Text('Local AI. Private by default.',
+            style: theme.textTheme.displaySmall,
+            textAlign: TextAlign.center),
+        const SizedBox(height: 12),
+        Text('Your own AI assistant that runs entirely on your machine.',
+            style: theme.textTheme.bodyLarge
+                ?.copyWith(color: theme.colorScheme.secondary),
+            textAlign: TextAlign.center),
+        const SizedBox(height: 32),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: _startOnboarding,
+            child: const Text('Get Started'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: () => context.go('/chat'),
+          child: const Text('I already have a model'),
+        ),
+      ],
+    );
+  }
+
+  // ── Step 2: Auto hardware scan (local, no backend) ──
+
+  void _startOnboarding() {
+    setState(() => _step = OnboardingStep.scan);
+    _scanHardwareLocal();
+  }
+
+  Future<void> _scanHardwareLocal() async {
+    // Read system info directly from the OS — no backend needed
+    try {
+      _cpuCores = Platform.numberOfProcessors;
+
+      // Get system profiler info on macOS
+      if (Platform.isMacOS) {
+        final sysInfo = await Process.run('sysctl', ['-n', 'hw.memsize']);
+        if (sysInfo.exitCode == 0) {
+          final bytes = int.tryParse(sysInfo.stdout.toString().trim()) ?? 0;
+          _ramMb = (bytes / (1024 * 1024)).round();
+        }
+
+        final cpuInfo =
+            await Process.run('sysctl', ['-n', 'machdep.cpu.brand_string']);
+        if (cpuInfo.exitCode == 0) {
+          _cpuName = cpuInfo.stdout.toString().trim();
+          if (_cpuName.isEmpty) {
+            // Apple Silicon doesn't have brand_string, detect via uname
+            final uname = await Process.run('uname', ['-m']);
+            final arch = uname.stdout.toString().trim();
+            _cpuName = arch == 'arm64' ? 'Apple Silicon' : arch;
+          }
+        }
+
+        // Detect GPU via system_profiler
+        final gpuInfo = await Process.run(
+            'system_profiler', ['SPDisplaysDataType', '-detailLevel', 'mini']);
+        if (gpuInfo.exitCode == 0) {
+          final output = gpuInfo.stdout.toString();
+          final chipMatch = RegExp(r'Chipset Model:\s*(.+)').firstMatch(output);
+          if (chipMatch != null) {
+            _gpuName = chipMatch.group(1)?.trim() ?? '';
+          } else if (_cpuName.contains('Apple')) {
+            // On Apple Silicon, GPU is integrated
+            _gpuName = _cpuName;
+          }
+        }
+      } else if (Platform.isWindows) {
+        // Windows: use wmic
+        final memInfo = await Process.run(
+            'wmic', ['computersystem', 'get', 'TotalPhysicalMemory']);
+        if (memInfo.exitCode == 0) {
+          final lines = memInfo.stdout.toString().trim().split('\n');
+          if (lines.length > 1) {
+            final bytes = int.tryParse(lines.last.trim()) ?? 0;
+            _ramMb = (bytes / (1024 * 1024)).round();
+          }
+        }
+        _cpuName = Platform.environment['PROCESSOR_IDENTIFIER'] ?? 'Unknown';
+      } else {
+        // Linux
+        _cpuName = 'Linux CPU';
+        try {
+          final memInfo = await Process.run('grep', ['MemTotal', '/proc/meminfo']);
+          if (memInfo.exitCode == 0) {
+            final match =
+                RegExp(r'(\d+)').firstMatch(memInfo.stdout.toString());
+            if (match != null) {
+              _ramMb = (int.parse(match.group(1)!) / 1024).round();
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Fallback: just use processor count
+      _ramMb = 0;
+      _cpuName = '${Platform.operatingSystem} (${_cpuCores} cores)';
+    }
+
+    // Auto-recommend best model based on hardware
+    _recommended = _pickBestModel();
+
+    if (mounted) {
+      setState(() => _step = OnboardingStep.recommend);
+    }
+  }
+
+  Widget _buildScan(ThemeData theme) {
+    return Column(
+      key: const ValueKey('scan'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Scanning your hardware...',
+            style: theme.textTheme.headlineMedium,
+            textAlign: TextAlign.center),
+        const SizedBox(height: 32),
+        const CircularProgressIndicator(),
+        const SizedBox(height: 24),
+        Text('Checking graphics memory, RAM, and disk speed',
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.secondary),
+            textAlign: TextAlign.center),
+      ],
+    );
+  }
+
+  // ── Step 3: Show recommendation (auto-selected, no choices) ──
+
+  Widget _buildRecommend(ThemeData theme) {
+    final rec = _recommended!;
+    final ramGb = (_ramMb / 1024).toStringAsFixed(0);
+
+    return Column(
+      key: const ValueKey('recommend'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.check_circle_outline,
+            size: 40, color: theme.colorScheme.primary),
+        const SizedBox(height: 16),
+        Text('Perfect match found',
+            style: theme.textTheme.headlineMedium,
+            textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Text('Based on your $ramGb GB RAM and $_cpuCores-core $_cpuName',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.secondary),
+            textAlign: TextAlign.center),
+        const SizedBox(height: 24),
+
+        // Recommended model card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primary.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: theme.colorScheme.primary.withValues(alpha: 0.2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(rec.name,
+                        style: theme.textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(rec.speedLabel,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                            color: const Color(0xFF10B981),
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(rec.sizeLabel, style: theme.textTheme.bodySmall),
+              const SizedBox(height: 4),
+              Text(rec.explanation,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.secondary)),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: () {
+              setState(() => _step = OnboardingStep.download);
+              _startDownload();
+            },
+            child: Text('Download ${rec.name}'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Step 4: Download (direct from HuggingFace, no backend needed) ──
+
+  Future<void> _startDownload() async {
+    try {
+      // Create models directory in app support
+      final appDir = await getApplicationSupportDirectory();
+      final modelsDir = Directory('${appDir.path}/models');
+      if (!await modelsDir.exists()) {
+        await modelsDir.create(recursive: true);
+      }
+
+      final rec = _recommended!;
+      final destFile = File('${modelsDir.path}/${rec.filename}');
+
+      // If already downloaded, skip straight to chat
+      if (await destFile.exists() && await destFile.length() > 1024 * 1024) {
+        if (mounted) _goToFirstChat();
+        return;
+      }
+
+      // Download directly from HuggingFace using RandomAccessFile for
+      // immediate disk writes (no buffering that can hang on flush).
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 30);
+      // HuggingFace redirects to CDN — follow automatically (default)
+      client.autoUncompress = false;
+
+      final request = await client.getUrl(Uri.parse(rec.downloadUrl));
+      final response = await request.close();
+
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+
+      final totalBytes = response.contentLength;
+      int receivedBytes = 0;
+      final raf = await destFile.open(mode: FileMode.write);
+      final stopwatch = Stopwatch()..start();
+
+      try {
+        await for (final chunk in response) {
+          if (!mounted) break;
+          await raf.writeFrom(chunk);
+          receivedBytes += chunk.length;
+
+          final progress =
+              totalBytes > 0 ? receivedBytes / totalBytes : 0.0;
+
+          // ETA
+          String eta = '';
+          if (progress > 0.01 && stopwatch.elapsedMilliseconds > 2000) {
+            final elapsed = stopwatch.elapsedMilliseconds / 1000;
+            final totalEstimate = elapsed / progress;
+            final remaining = (totalEstimate - elapsed).round();
+            if (remaining > 60) {
+              eta = '${(remaining / 60).round()} min remaining';
+            } else {
+              eta = '$remaining sec remaining';
+            }
+          }
+
+          // Speed
+          final mbReceived = receivedBytes / (1024 * 1024);
+          final seconds = stopwatch.elapsedMilliseconds / 1000;
+          final speed = seconds > 0 ? mbReceived / seconds : 0.0;
+          final speedStr = '${speed.toStringAsFixed(1)} MB/s';
+
+          setState(() {
+            _downloadProgress = progress;
+            _downloadStatus =
+                '${mbReceived.toStringAsFixed(0)} MB${totalBytes > 0 ? " / ${(totalBytes / (1024 * 1024)).toStringAsFixed(0)} MB" : ""} — $speedStr${eta.isNotEmpty ? " — $eta" : ""}';
+          });
+        }
+      } finally {
+        await raf.close();
+        client.close();
+      }
+
+      if (mounted) _goToFirstChat();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _downloadError =
+              'Download failed. Check your internet connection and try again.';
+        });
+      }
+    }
+  }
+
+  void _goToFirstChat() {
+    // Register downloaded model as active so the rest of the app knows
+    if (_recommended != null) {
+      final settings = context.read<SettingsService>();
+      settings.activeModelId = _recommended!.filename;
+    }
+
+    setState(() => _step = OnboardingStep.firstChat);
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) context.go('/chat');
+    });
+  }
+
+  Widget _buildDownload(ThemeData theme) {
+    return Column(
+      key: const ValueKey('download'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Downloading ${_recommended?.name ?? "model"}...',
+            style: theme.textTheme.headlineMedium,
+            textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Text(_recommended?.sizeLabel ?? '',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.secondary)),
+        const SizedBox(height: 24),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: _downloadProgress > 0 ? _downloadProgress : null,
+            minHeight: 6,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(_downloadStatus.isNotEmpty ? _downloadStatus : 'Starting download...',
+            style: theme.textTheme.bodySmall),
+        if (_downloadError != null) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.error.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(_downloadError!,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.error),
+                textAlign: TextAlign.center),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => context.go('/chat'),
+                  child: const Text('Skip for now'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _downloadError = null;
+                      _downloadProgress = 0;
+                      _downloadStatus = '';
+                    });
+                    _startDownload();
+                  },
+                  child: const Text('Retry'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  // ── Step 5: Done ──
+
+  Widget _buildFirstChat(ThemeData theme) {
+    return Column(
+      key: const ValueKey('firstChat'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.check_circle, size: 48, color: Colors.green.shade400),
+        const SizedBox(height: 24),
+        Text("You're all set!",
+            style: theme.textTheme.headlineMedium,
+            textAlign: TextAlign.center),
+        const SizedBox(height: 12),
+        Text('Starting your first chat...',
+            style: theme.textTheme.bodyLarge
+                ?.copyWith(color: theme.colorScheme.secondary)),
+      ],
+    );
+  }
+
+  // ── Built-in model recommendation (no backend needed) ──
+
+  _RecommendedModel _pickBestModel() {
+    // GGUF quantized models from HuggingFace — direct download, no auth needed.
+    // Picks the best model that fits comfortably in the user's RAM.
+    if (_ramMb >= 64000) {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 8B',
+        filename: 'llama-3.2-8b-instruct-q5_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf',
+        sizeLabel: 'Q5 quantization, ~5.7 GB',
+        speedLabel: 'Fast',
+        explanation: 'High quality model with plenty of room on your machine.',
+      );
+    } else if (_ramMb >= 16000) {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 8B',
+        filename: 'llama-3.2-8b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+        sizeLabel: 'Q4 quantization, ~4.9 GB',
+        speedLabel: 'Fast',
+        explanation: 'Best experience for your hardware. Responsive and capable.',
+      );
+    } else if (_ramMb >= 8000) {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 3B',
+        filename: 'llama-3.2-3b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+        sizeLabel: 'Q4 quantization, ~2.0 GB',
+        speedLabel: 'Fast',
+        explanation: 'Lightweight and fast. Perfect for your available memory.',
+      );
+    } else {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 1B',
+        filename: 'llama-3.2-1b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+        sizeLabel: 'Q4 quantization, ~0.8 GB',
+        speedLabel: 'Fast',
+        explanation: 'Smallest model — instant responses, good for quick tasks.',
+      );
+    }
+  }
+}
+
+class _RecommendedModel {
+  final String name;
+  final String filename;
+  final String downloadUrl;
+  final String sizeLabel;
+  final String speedLabel;
+  final String explanation;
+
+  const _RecommendedModel({
+    required this.name,
+    required this.filename,
+    required this.downloadUrl,
+    required this.sizeLabel,
+    required this.speedLabel,
+    required this.explanation,
+  });
+}

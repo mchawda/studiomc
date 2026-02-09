@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+*.dmg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Flutter
+studiomc_app/build/
+studiomc_app/.dart_tool/
+studiomc_app/.flutter-plugins-dependencies
+studiomc_app/.pub-cache/
+studiomc_app/.pub/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Secrets / env
+.env
+.env.local
+*.pem
+*.p12
+*.key
+
+# Build artifacts
+dist/
+*.app
+*.zip

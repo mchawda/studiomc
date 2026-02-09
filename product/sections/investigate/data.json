@@ -1,0 +1,83 @@
+{
+  "reasoningRun": {
+    "id": "run-001",
+    "chatId": "chat-004",
+    "mode": "investigate",
+    "trace": [
+      {
+        "id": "step-001",
+        "type": "search",
+        "description": "Search: 'Q4 revenue growth' in Work Documents",
+        "input": "Q4 revenue growth",
+        "result": "Found 5 relevant chunks across 2 documents",
+        "durationMs": 45,
+        "timestamp": "2026-02-06T11:30:01Z"
+      },
+      {
+        "id": "step-002",
+        "type": "open",
+        "description": "Opened: quarterly-report-q4.pdf (pages 3–4)",
+        "input": "doc-003, pages 3-4",
+        "result": "Revenue section: Q4 revenue was $12.4M, up 23% YoY",
+        "durationMs": 12,
+        "timestamp": "2026-02-06T11:30:01Z"
+      },
+      {
+        "id": "step-003",
+        "type": "table_extract",
+        "description": "Extracted: revenue table rows 12–17",
+        "input": "doc-003, table at rows 12-17",
+        "result": "Q1: $8.2M, Q2: $9.1M, Q3: $10.5M, Q4: $12.4M",
+        "durationMs": 28,
+        "timestamp": "2026-02-06T11:30:01Z"
+      },
+      {
+        "id": "step-004",
+        "type": "open",
+        "description": "Opened: meeting-notes.txt (section 2)",
+        "input": "doc-004, section 2",
+        "result": "CFO mentioned Q4 growth driven by enterprise deals closing in December",
+        "durationMs": 8,
+        "timestamp": "2026-02-06T11:30:02Z"
+      },
+      {
+        "id": "step-005",
+        "type": "cite",
+        "description": "Cited: quarterly-report-q4.pdf, meeting-notes.txt",
+        "input": "doc-003, doc-004",
+        "result": "2 sources grounding the answer",
+        "durationMs": 5,
+        "timestamp": "2026-02-06T11:30:02Z"
+      }
+    ],
+    "budget": {
+      "toolCallsUsed": 5,
+      "toolCallsMax": 6,
+      "recursionDepthUsed": 1,
+      "recursionDepthMax": 2,
+      "tokensRetrieved": 3200,
+      "tokensMax": 8192,
+      "wallClockMs": 4800,
+      "wallClockMaxMs": 20000,
+      "exceeded": false,
+      "exceededReason": null
+    },
+    "citations": [
+      {
+        "documentId": "doc-003",
+        "filename": "quarterly-report-q4.pdf",
+        "chunkIndex": 12,
+        "span": "pages 3-4, rows 12-17",
+        "snippet": "Q4 revenue was $12.4M, up 23% YoY. Growth driven by enterprise segment."
+      },
+      {
+        "documentId": "doc-004",
+        "filename": "meeting-notes.txt",
+        "chunkIndex": 2,
+        "span": "section 2",
+        "snippet": "CFO confirmed Q4 growth driven by enterprise deals closing in December."
+      }
+    ],
+    "status": "completed"
+  }
+}
