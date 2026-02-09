@@ -1,6 +1,5 @@
 # studiomc Desktop — Technical [Blueprintv1.md]
-(**Product goal:** A mass-market, “ChatGPT-easy” desktop app that runs open local models with maximum usability, privacy, and predictable performance—built on AirLLM’s out-of-core capabilities, while being brutally honest about hardware limits. Our product is called “Studiomc”, we use code from Airllm, but where possible, rewrite it.\
-<https://github.com/lyogavin/airllm>
+(**Product goal:** A mass-market, “ChatGPT-easy” desktop app that runs open local models with maximum usability, privacy, and predictable performance—built on AirLLM’s out-of-core capabilities, while being brutally honest about hardware limits. Our product is called “Studiomc”.
 
 > **Non-negotiable truth:** “70B on 4GB” is a *capability demo*, not a *pleasant experience*. The product wins by making the *right* model feel great on each machine and by keeping “too-big” models usable through guardrails, smart defaults, and transparent expectations.
 
