@@ -35,3 +35,8 @@ studiomc_app/.pub/
 dist/
 *.app
 *.zip
+
+# Private product docs
+product/
+product-plan/
+Blueprint.md
