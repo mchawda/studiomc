@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Model splitter — splits HuggingFace models into per-layer safetensors files.
 
 MEMORY-SAFE: Never loads more than one tensor at a time using safe_open().

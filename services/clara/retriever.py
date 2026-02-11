@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """CLaRa Retriever — query → top-k latent vectors + optional snippet retrieval.
 
 Loads the per-collection CLaRa index (numpy), encodes the query with the same

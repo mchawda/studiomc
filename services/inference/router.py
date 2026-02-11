@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Inference Router — routes requests to the best available backend.
 
 Supported backends (in priority order):

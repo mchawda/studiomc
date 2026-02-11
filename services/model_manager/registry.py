@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Model registry — CRUD operations and curated model catalog.
 
 Persists registered models in SQLite via the shared Database layer.

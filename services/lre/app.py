@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """LRE Service — FastAPI application entry point.
 
 Local Reasoning Environment: a sandboxed tool runtime for Investigate mode.

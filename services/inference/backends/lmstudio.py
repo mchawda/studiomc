@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """LM Studio backend client.
 
 Communicates with a local LM Studio instance via its OpenAI-compatible API:

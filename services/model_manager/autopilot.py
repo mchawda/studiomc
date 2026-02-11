@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Autopilot — hardware-aware model recommendation engine.
 
 Takes HardwareInfo and returns a ranked list of recommended models,

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Hardware scanner — detects GPU/VRAM, RAM, CPU, disk speed.
 
 Produces a HardwareInfo with hw_fingerprint for benchmark keying.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+// Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 // Core data models for Studiomc
 
 enum SpeedRating { fast, ok, slow, painful }

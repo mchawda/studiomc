@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Tokenizer utilities for training data preparation.
 
 Provides token counting via tiktoken and functions to parse various

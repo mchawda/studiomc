@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+// Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 import 'dart:async';
 import 'package:studiomc_app/services/api_client.dart';
 

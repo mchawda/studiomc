@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """SpliceLLM inference engine — wraps the out-of-core engine for the service layer.
 
 Provides the public API used by the router and backends:

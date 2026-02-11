@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Studiomc Services — single entry-point for PyInstaller bundle.
 
 When packaged with PyInstaller, this module IS the executable. It supports

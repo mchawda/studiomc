@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+// Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 import 'package:go_router/go_router.dart';
 import '../screens/onboarding_screen.dart';
 import '../screens/chat_screen.dart';

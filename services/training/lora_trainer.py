@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Real LoRA adapter trainer using PEFT + PyTorch.
 
 Handles the full pipeline:

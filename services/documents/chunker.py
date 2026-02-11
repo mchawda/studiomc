@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Text chunking — split extracted text into overlapping chunks of 500-1000 tokens.
 
 Token estimation uses word_count * 0.75 (avoids a hard dependency on tiktoken).

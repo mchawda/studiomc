@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Memory management utilities for out-of-core inference.
 
 Provides aggressive memory cleanup between layer computations to ensure

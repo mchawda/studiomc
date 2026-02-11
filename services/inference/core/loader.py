@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Layer loader — loads individual layers from split safetensors files.
 
 Provides efficient loading of per-layer weight files with optional

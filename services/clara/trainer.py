@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """CLaRa Compression-Aware Trainer — fine-tunes the compression model.
 
 Phase 3: Trains the sentence embedding model used by CLaRa's compressor

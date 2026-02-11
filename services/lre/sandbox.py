@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Sandbox — security enforcement and budget tracking for LRE.
 
 Every tool invocation goes through the sandbox which:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """SpliceLLM — out-of-core inference engine.
 
 Runs models of any size by streaming layers from disk through memory,

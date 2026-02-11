@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Studiomc backend client — wraps the built-in SpliceLLM InferenceEngine.
 
 SpliceLLM runs large models by

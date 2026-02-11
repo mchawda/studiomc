@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """SQLite database layer — async via aiosqlite.
 
 Implements the full schema from product/data-model/data-model.md.

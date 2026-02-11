@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Text extraction from PDF, TXT, and MD files.
 
 Extracted text is written to DOCS_DIR/<doc_id>/extracted.txt.

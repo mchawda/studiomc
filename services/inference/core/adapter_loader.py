@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """PEFT LoRA adapter loader — hot-swap adapters on a base model.
 
 Loads and unloads PEFT LoRA adapters on top of a loaded base model

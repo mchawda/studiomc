@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """SpliceLLM inference core — out-of-core model inference engine.
 
 This package implements the SpliceLLM engine that

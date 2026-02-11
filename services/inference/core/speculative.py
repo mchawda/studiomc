@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Speculative decoding — draft-then-verify acceleration for autoregressive generation.
 
 Implements the speculative decoding algorithm from Leviathan et al. (2023):

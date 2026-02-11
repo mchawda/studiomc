@@ -1,0 +1,21 @@
+SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+
+This software and associated documentation files (the "Software") are the
+confidential and proprietary information of NIA Pte Ltd ("Company"). All
+rights, title, and interest in and to the Software are and shall remain the
+exclusive property of the Company.
+
+Permission is hereby granted, subject to the following conditions:
+
+1. The Software may be used for internal evaluation and non-commercial
+   purposes only.
+2. No part of the Software may be copied, modified, distributed, sublicensed,
+   or used in any commercial capacity without prior written permission from
+   the Company.
+3. This Software is not open source and is not covered by any standard open
+   source license (e.g., MIT, GPL).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED.
+
+For commercial licensing or additional permissions, contact contact@nia.sg.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Planner — decides which tools to call based on mode and query analysis.
 
 For *fast* mode the planner is a no-op (go straight to inference).

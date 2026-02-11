@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Context Distillation — train models to reason over compressed context.
 
 Phase 4: Builds on CLaRa compression and LoRA training to teach a model

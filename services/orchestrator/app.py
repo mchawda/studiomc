@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Recursive Orchestrator Service — FastAPI application entrypoint.
 
 Starts on 127.0.0.1:8105.  Implements the RLM-style reasoning loop

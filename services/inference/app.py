@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Inference Service — FastAPI application entry point.
 
 Wraps the Inference Router for multi-backend model inference with:

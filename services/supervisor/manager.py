@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Process manager — start, stop, monitor, and auto-restart child services.
 
 Each managed service is launched as a subprocess running its own uvicorn server.

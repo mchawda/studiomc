@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+
 """Downloader — HuggingFace model downloads with pause/resume and checksum.
 
 Downloads are tracked in memory via a dict keyed by model_id.
