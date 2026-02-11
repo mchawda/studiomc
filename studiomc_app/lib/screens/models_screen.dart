@@ -2,14 +2,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import 'package:studiomc_app/models/app_models.dart';
-import 'package:studiomc_app/services/api_client.dart';
-import 'package:studiomc_app/services/inference_service.dart';
-import 'package:studiomc_app/services/model_service.dart';
-import 'package:studiomc_app/services/database_service.dart';
-import 'package:studiomc_app/widgets/models/model_card.dart';
-import 'package:studiomc_app/widgets/models/recommended_hero_card.dart';
+import 'package:studiomc_app/services/bundled_inference_service.dart';
+import 'package:studiomc_app/services/local_inference_service.dart';
+import 'package:studiomc_app/services/settings_service.dart';
+import 'package:studiomc_app/services/training_service.dart';
 
+/// Discover / Models screen — shows installed Ollama models,
+/// personalized (LoRA) adapters, and curated downloads including
+/// large models for the SpliceLLM engine.
 class ModelsScreen extends StatefulWidget {
   const ModelsScreen({super.key});
 
@@ -21,246 +21,321 @@ class _ModelsScreenState extends State<ModelsScreen> {
   bool _isLoading = true;
   String? _error;
 
-  List<AIModel> _installedModels = [];
-  List<CuratedModel> _curatedModels = [];
-  AIModel? _recommendedModel;
-  AutopilotResult? _recommendation;
-  String? _activeModelId;
-
-  // Download state tracking
-  final Map<String, StreamSubscription<Map<String, dynamic>>>
-      _downloadSubscriptions = {};
+  // Download progress per tag
   final Map<String, double> _downloadProgress = {};
-  final Map<String, DownloadStatus> _downloadStatuses = {};
+  final Map<String, bool> _downloading = {};
+
+  // Personalized adapters from the training service
+  List<Map<String, dynamic>> _adapters = [];
+  bool _adaptersLoading = false;
+
+  // Curated models available to download from Ollama
+  static const _curatedModels = <_CuratedEntry>[
+    _CuratedEntry(
+      tag: 'llama3.2',
+      name: 'Llama 3.2',
+      params: '3B',
+      description: 'Meta\'s latest compact model. Great all-rounder.',
+      sizeEstimate: '2.0 GB',
+    ),
+    _CuratedEntry(
+      tag: 'llama3.2:1b',
+      name: 'Llama 3.2 1B',
+      params: '1B',
+      description: 'Ultra-light Llama for fast responses.',
+      sizeEstimate: '1.3 GB',
+    ),
+    _CuratedEntry(
+      tag: 'llama3.1:8b',
+      name: 'Llama 3.1 8B',
+      params: '8B',
+      description: 'Larger Llama with strong reasoning.',
+      sizeEstimate: '4.7 GB',
+    ),
+    _CuratedEntry(
+      tag: 'qwen3:4b',
+      name: 'Qwen 3 4B',
+      params: '4B',
+      description: 'Alibaba\'s fast multilingual model.',
+      sizeEstimate: '2.6 GB',
+    ),
+    _CuratedEntry(
+      tag: 'qwen2.5:7b',
+      name: 'Qwen 2.5 7B',
+      params: '7B',
+      description: 'Strong coding and reasoning model.',
+      sizeEstimate: '4.4 GB',
+    ),
+    _CuratedEntry(
+      tag: 'mistral',
+      name: 'Mistral 7B',
+      params: '7B',
+      description: 'Efficient general-purpose model from Mistral AI.',
+      sizeEstimate: '4.1 GB',
+    ),
+    _CuratedEntry(
+      tag: 'phi3',
+      name: 'Phi-3 Mini',
+      params: '3.8B',
+      description: 'Microsoft\'s small but capable model.',
+      sizeEstimate: '2.3 GB',
+    ),
+    _CuratedEntry(
+      tag: 'gemma2:2b',
+      name: 'Gemma 2 2B',
+      params: '2B',
+      description: 'Google\'s lightweight open model.',
+      sizeEstimate: '1.6 GB',
+    ),
+    _CuratedEntry(
+      tag: 'deepseek-coder:6.7b',
+      name: 'DeepSeek Coder',
+      params: '6.7B',
+      description: 'Specialized for code generation.',
+      sizeEstimate: '3.8 GB',
+    ),
+    // ── Large models (run via SpliceLLM) ──
+    _CuratedEntry(
+      tag: 'llama3.1:70b',
+      name: 'Llama 3.1 70B',
+      params: '70B',
+      description: 'Full-size Llama. Uses SpliceLLM streaming for low-RAM machines.',
+      sizeEstimate: '40 GB',
+      isLargeModel: true,
+    ),
+    _CuratedEntry(
+      tag: 'qwen2.5:72b',
+      name: 'Qwen 2.5 72B',
+      params: '72B',
+      description: 'Large multilingual model. Streams from disk via SpliceLLM.',
+      sizeEstimate: '41 GB',
+      isLargeModel: true,
+    ),
+    _CuratedEntry(
+      tag: 'deepseek-r1:70b',
+      name: 'DeepSeek R1 70B',
+      params: '70B',
+      description: 'Reasoning-focused large model. SpliceLLM inference.',
+      sizeEstimate: '42 GB',
+      isLargeModel: true,
+    ),
+    _CuratedEntry(
+      tag: 'mixtral:8x7b',
+      name: 'Mixtral 8x7B',
+      params: '47B MoE',
+      description: 'Mixture-of-experts model. Fast via SpliceLLM.',
+      sizeEstimate: '26 GB',
+      isLargeModel: true,
+    ),
+  ];
 
   @override
   void initState() {
     super.initState();
-    _loadModels();
+    _load();
   }
 
-  @override
-  void dispose() {
-    for (final sub in _downloadSubscriptions.values) {
-      sub.cancel();
-    }
-    super.dispose();
-  }
-
-  Future<void> _loadModels() async {
+  Future<void> _load() async {
     setState(() {
       _isLoading = true;
       _error = null;
     });
 
-    final api = context.read<ApiClient>();
-    final db = context.read<DatabaseService>();
+    try {
+      final local = context.read<LocalInferenceService>();
+      if (!local.available) {
+        await local.init();
+      }
+      if (!local.available) {
+        _error = 'Ollama not available. Install Ollama to manage models.';
+      }
+    } catch (e) {
+      _error = 'Failed to connect to Ollama: $e';
+    }
+
+    // Load adapters in parallel
+    await _loadAdapters();
+
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  Future<void> _loadAdapters() async {
+    if (!mounted) return;
+    setState(() => _adaptersLoading = true);
 
     try {
-      // Always re-check backend availability (don't rely on cached flag)
-      final backendUp = await api.checkAvailable();
-
-      if (backendUp) {
-        await _loadFromBackend();
-      } else {
-        await _loadFromDb(db);
-        _error =
-            'Backend not available. Showing locally cached models. Start the service to manage models.';
+      final training = TrainingService();
+      final adapters = await training.getAdapters();
+      if (mounted) {
+        setState(() {
+          _adapters = adapters;
+          _adaptersLoading = false;
+        });
       }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _adapters = [];
+          _adaptersLoading = false;
+        });
+      }
+    }
+  }
 
-      setState(() => _isLoading = false);
-    } catch (e) {
+  Set<String> _installedTags(LocalInferenceService local) {
+    return local.models.map((m) => m.name).toSet();
+  }
+
+  /// Check if a curated tag is already installed (exact or base match).
+  bool _isInstalled(String tag, Set<String> installed) {
+    if (installed.contains(tag)) return true;
+    final base = tag.split(':').first;
+    // "llama3.2" matches "llama3.2:latest"
+    if (installed.contains('$base:latest')) return true;
+    return false;
+  }
+
+  Future<void> _downloadModel(String tag) async {
+    final local = context.read<LocalInferenceService>();
+
+    setState(() {
+      _downloading[tag] = true;
+      _downloadProgress[tag] = 0.0;
+    });
+
+    try {
+      await for (final progress in local.pullModelWithProgress(tag)) {
+        if (!mounted) return;
+        setState(() => _downloadProgress[tag] = progress);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Download failed for $tag')),
+        );
+      }
+    }
+
+    if (mounted) {
       setState(() {
-        _isLoading = false;
-        _error = 'Failed to load models: $e';
+        _downloading.remove(tag);
+        _downloadProgress.remove(tag);
       });
     }
   }
 
-  Future<void> _loadFromBackend() async {
-    final modelService = ModelService();
-
-    // Fetch all data in parallel
-    final results = await Future.wait([
-      modelService.listModels(),
-      modelService.getCuratedModels(),
-    ]);
-
-    final allModels = results[0] as List<AIModel>;
-    final curated = results[1] as List<CuratedModel>;
-
-    // Separate installed (ready) vs not
-    _installedModels =
-        allModels.where((m) => m.downloadStatus == DownloadStatus.ready).toList();
-    _activeModelId =
-        _installedModels.where((m) => m.isActive).firstOrNull?.id;
-
-    // Find recommended model
-    _recommendedModel =
-        allModels.where((m) => m.isRecommended).firstOrNull;
-
-    // Filter curated models to only show ones not already installed
-    final installedIds = _installedModels.map((m) => m.id).toSet();
-    _curatedModels =
-        curated.where((c) => !installedIds.contains(c.id)).toList();
-
-    // Try to get hardware-based recommendation
-    try {
-      final inference = context.read<InferenceService>();
-      final models = await inference.getModels();
-      if (models.isNotEmpty) {
-        _activeModelId ??= models.first['id'] as String?;
-      }
-    } catch (_) {
-      // Not critical
-    }
-  }
-
-  Future<void> _loadFromDb(DatabaseService db) async {
-    final rows = await db.getModels();
-    _installedModels = rows
-        .map((r) => AIModel(
-              id: r['id'] as String,
-              name: r['name'] as String,
-              source: ModelSource.local,
-              paramsBillion:
-                  (r['params_billion'] as num?)?.toDouble() ?? 0,
-              diskBytes: (r['disk_bytes'] as num?)?.toInt() ?? 0,
-              contextMax: (r['context_max'] as num?)?.toInt() ?? 4096,
-              speedRating: SpeedRating.ok,
-              predictedTokPerS: 0,
-              predictedTtftMs: 0,
-              sizeLabel: '',
-              downloadStatus: DownloadStatus.ready,
-            ))
-        .toList();
-  }
-
-  SpeedRating _parseSpeedRating(String? rating) {
-    switch (rating) {
-      case 'fast':
-        return SpeedRating.fast;
-      case 'ok':
-        return SpeedRating.ok;
-      case 'slow':
-        return SpeedRating.slow;
-      case 'painful':
-        return SpeedRating.painful;
-      default:
-        return SpeedRating.ok;
-    }
-  }
-
-  Future<void> _handleModelTap(AIModel model) async {
-    if (model.downloadStatus != DownloadStatus.ready) return;
-
-    if (model.speedRating == SpeedRating.painful) {
-      _showGuardrailDialog(model);
-    } else {
-      await _activateModel(model);
-    }
-  }
-
-  void _showGuardrailDialog(AIModel model) {
+  Future<void> _deleteModel(OllamaModel model) async {
     final theme = Theme.of(context);
-    final recommended = _recommendedModel;
+    final local = context.read<LocalInferenceService>();
+    final name = local.humanName(model.name);
 
-    showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
-        title: Text('Slow Performance Warning',
+        title: Text('Delete $name?',
             style: GoogleFonts.spaceGrotesk(
-              fontSize: 9,
-              fontWeight: FontWeight.w600,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
             )),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${model.name} will be slow on your hardware.',
-              style: GoogleFonts.inter(fontSize: 9, height: 1.5),
-            ),
-            if (recommended != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Recommended alternative: ${recommended.name} (predicted fast).',
-                style: GoogleFonts.inter(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w500,
-                  height: 1.5,
-                ),
-              ),
-            ],
-          ],
+        content: Text(
+          'Remove this model from Ollama. You can re-download later.',
+          style: GoogleFonts.inter(
+            fontSize: 10,
+            color: theme.colorScheme.secondary,
+          ),
         ),
         actions: [
-          if (recommended != null)
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _activateModel(recommended);
-              },
-              child: const Text('Use recommended'),
-            ),
           TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              _activateModel(model);
-            },
-            child: const Text('Run anyway'),
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: theme.colorScheme.error,
+            ),
+            child: const Text('Delete'),
           ),
         ],
       ),
     );
-  }
 
-  Future<void> _activateModel(AIModel model) async {
-    final api = context.read<ApiClient>();
-
-    try {
-      if (api.isAvailable) {
-        final inference = context.read<InferenceService>();
-        await inference.selectModel(model.id);
-      }
-
-      setState(() {
-        _installedModels = _installedModels.map((m) {
-          return AIModel(
-            id: m.id,
-            name: m.name,
-            source: m.source,
-            sourceRef: m.sourceRef,
-            paramsBillion: m.paramsBillion,
-            quant: m.quant,
-            diskBytes: m.diskBytes,
-            arch: m.arch,
-            contextMax: m.contextMax,
-            checksum: m.checksum,
-            speedRating: m.speedRating,
-            predictedTokPerS: m.predictedTokPerS,
-            predictedTtftMs: m.predictedTtftMs,
-            sizeLabel: m.sizeLabel,
-            isActive: m.id == model.id,
-            isRecommended: m.isRecommended,
-            lastUsedAt: m.lastUsedAt,
-            downloadStatus: m.downloadStatus,
-            downloadProgress: m.downloadProgress,
-          );
-        }).toList();
-        _activeModelId = model.id;
-      });
-
+    if (confirmed == true) {
+      final ok = await local.deleteModel(model.name);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'Switched to ${model.name}',
-              style: GoogleFonts.inter(fontSize: 9),
+            content: Text(ok ? '$name deleted' : 'Failed to delete $name'),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
             ),
+          ),
+        );
+        setState(() {});
+      }
+    }
+  }
+
+  void _activateModel(OllamaModel model) {
+    final local = context.read<LocalInferenceService>();
+    final settings = context.read<SettingsService>();
+    local.selectModel(model.name);
+    settings.activeModelId = model.name;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Switched to ${local.humanName(model.name)}'),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+    setState(() {});
+  }
+
+  // ── Adapter actions ──
+
+  Future<void> _toggleAdapter(Map<String, dynamic> adapter) async {
+    final id = adapter['id'] as String? ?? '';
+    final name = adapter['name'] as String? ?? 'Adapter';
+    final isActive = adapter['is_active'] == true || adapter['is_active'] == 1;
+    final training = TrainingService();
+
+    try {
+      if (isActive) {
+        // Deactivate by activating with empty — the backend deactivates all
+        // for this base model. We re-fetch to get updated state.
+        // Since there's no explicit deactivate endpoint, we just reload.
+        // The activate endpoint deactivates others first, so calling activate
+        // on an already-active adapter is effectively a no-op.
+        // For true deactivation, we'd need a separate endpoint.
+        // For now, show a snackbar explaining the adapter is already active.
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$name is already active'),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+
+      await training.activateAdapter(id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Activated $name'),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
@@ -269,164 +344,12 @@ class _ModelsScreenState extends State<ModelsScreen> {
           ),
         );
       }
+      await _loadAdapters();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to activate model: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _handleDownloadCurated(CuratedModel curated) async {
-    final api = context.read<ApiClient>();
-
-    if (!api.isAvailable) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Backend not available. Cannot download.')),
-        );
-      }
-      return;
-    }
-
-    final modelService = ModelService();
-
-    try {
-      // Add the model first
-      final model = await modelService.addModel(
-        source: curated.source,
-        sourceRef: curated.sourceRef,
-      );
-
-      if (model == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to add model')),
-          );
-        }
-        return;
-      }
-
-      setState(() {
-        _downloadStatuses[curated.id] = DownloadStatus.downloading;
-        _downloadProgress[curated.id] = 0;
-      });
-
-      // Start download and watch progress
-      await modelService.resumeDownload(model.id);
-
-      _downloadSubscriptions[curated.id]?.cancel();
-      _downloadSubscriptions[curated.id] =
-          modelService.watchDownloadProgress(model.id).listen(
-        (status) {
-          if (!mounted) return;
-          final progress =
-              (status['progress'] as num?)?.toDouble() ?? 0;
-          final isDone = status['status'] == 'ready';
-          final isError = status['status'] == 'error';
-
-          setState(() {
-            if (isDone) {
-              _downloadStatuses.remove(curated.id);
-              _downloadProgress.remove(curated.id);
-              _curatedModels.removeWhere((c) => c.id == curated.id);
-
-              // Add to installed list
-              _installedModels.add(AIModel(
-                id: model.id,
-                name: model.name,
-                source: model.source,
-                paramsBillion: model.paramsBillion,
-                diskBytes: model.diskBytes,
-                contextMax: model.contextMax,
-                speedRating: model.speedRating,
-                predictedTokPerS: model.predictedTokPerS,
-                predictedTtftMs: model.predictedTtftMs,
-                sizeLabel: model.sizeLabel,
-                downloadStatus: DownloadStatus.ready,
-              ));
-            } else if (isError) {
-              _downloadStatuses[curated.id] = DownloadStatus.error;
-            } else {
-              _downloadProgress[curated.id] = progress;
-            }
-          });
-        },
-      );
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _downloadStatuses[curated.id] = DownloadStatus.error;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _handleDeleteModel(AIModel model) async {
-    final api = context.read<ApiClient>();
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        final theme = Theme.of(context);
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          title: Text('Delete ${model.name}?',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 9,
-                fontWeight: FontWeight.w500,
-              )),
-          content: Text(
-            'This will remove the model from your device. You can re-download it later.',
-            style: GoogleFonts.inter(
-              fontSize: 9,
-              color: theme.colorScheme.secondary,
-              height: 1.5,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              style: FilledButton.styleFrom(
-                backgroundColor: theme.colorScheme.error,
-              ),
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) return;
-
-    try {
-      if (api.isAvailable) {
-        await ModelService().deleteModel(model.id);
-      }
-
-      final db = context.read<DatabaseService>();
-      await db.deleteModel(model.id);
-
-      setState(() {
-        _installedModels.removeWhere((m) => m.id == model.id);
-        if (_activeModelId == model.id) _activeModelId = null;
-      });
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${model.name} deleted'),
+            content: Text('Failed to activate adapter: $e'),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
@@ -434,11 +357,76 @@ class _ModelsScreenState extends State<ModelsScreen> {
           ),
         );
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to delete: $e')),
-        );
+    }
+  }
+
+  Future<void> _deleteAdapter(Map<String, dynamic> adapter) async {
+    final theme = Theme.of(context);
+    final id = adapter['id'] as String? ?? '';
+    final name = adapter['name'] as String? ?? 'Adapter';
+    final training = TrainingService();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Text('Delete "$name"?',
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            )),
+        content: Text(
+          'This will permanently remove the personalized adapter and its training data.',
+          style: GoogleFonts.inter(
+            fontSize: 10,
+            color: theme.colorScheme.secondary,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: theme.colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await training.deleteAdapter(id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$name deleted'),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          );
+        }
+        await _loadAdapters();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete adapter: $e'),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          );
+        }
       }
     }
   }
@@ -452,6 +440,22 @@ class _ModelsScreenState extends State<ModelsScreen> {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
+  String _formatDate(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(iso);
+      final now = DateTime.now();
+      final diff = now.difference(dt);
+      if (diff.inDays == 0) return 'Today';
+      if (diff.inDays == 1) return 'Yesterday';
+      if (diff.inDays < 7) return '${diff.inDays}d ago';
+      if (diff.inDays < 30) return '${(diff.inDays / 7).floor()}w ago';
+      return '${dt.month}/${dt.day}/${dt.year}';
+    } catch (_) {
+      return '';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -460,10 +464,26 @@ class _ModelsScreenState extends State<ModelsScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    final local = context.watch<LocalInferenceService>();
+    final installed = local.models;
+    final installedTags = _installedTags(local);
+
+    // Filter curated to only show uninstalled
+    final available = _curatedModels
+        .where((c) => !_isInstalled(c.tag, installedTags))
+        .toList();
+
+    // Partition adapters: active first, then inactive
+    final activeAdapters =
+        _adapters.where((a) => a['is_active'] == true || a['is_active'] == 1).toList();
+    final inactiveAdapters =
+        _adapters.where((a) => a['is_active'] != true && a['is_active'] != 1).toList();
+    final sortedAdapters = [...activeAdapters, ...inactiveAdapters];
+
     return RefreshIndicator(
-      onRefresh: _loadModels,
+      onRefresh: _load,
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -476,30 +496,50 @@ class _ModelsScreenState extends State<ModelsScreen> {
                     children: [
                       Text('Models',
                           style: GoogleFonts.spaceGrotesk(
-                            fontSize: 9,
+                            fontSize: 15,
                             fontWeight: FontWeight.w600,
                             color: theme.colorScheme.onSurface,
                           )),
                       const SizedBox(height: 4),
-                      Text('Manage your local AI models',
-                          style: GoogleFonts.inter(
-                            fontSize: 9,
-                            color: theme.colorScheme.secondary,
-                          )),
+                      Builder(builder: (ctx) {
+                        final engine = ctx.watch<BundledInferenceService>();
+                        return Row(
+                          children: [
+                            Icon(
+                              engine.available
+                                  ? Icons.circle
+                                  : Icons.circle_outlined,
+                              size: 8,
+                              color: engine.available
+                                  ? Colors.green
+                                  : theme.colorScheme.secondary,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              engine.available
+                                  ?                               'Ollama + SpliceLLM'
+                                  : engine.starting
+                                      ? 'Starting SpliceLLM...'
+                                      : 'Ollama only',
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                color: theme.colorScheme.secondary,
+                              ),
+                            ),
+                          ],
+                        );
+                      }),
                     ],
                   ),
                 ),
                 IconButton(
-                  onPressed: _loadModels,
+                  onPressed: _load,
                   icon: const Icon(Icons.refresh_rounded, size: 20),
                   tooltip: 'Refresh',
-                  style: IconButton.styleFrom(
-                    foregroundColor: theme.colorScheme.secondary,
-                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 8),
 
             // Error banner
             if (_error != null) ...[
@@ -535,111 +575,74 @@ class _ModelsScreenState extends State<ModelsScreen> {
             Expanded(
               child: ListView(
                 children: [
-                  // Recommended hero card
-                  if (_recommendedModel != null) ...[
-                    RecommendedHeroCard(model: _recommendedModel!),
-                    const SizedBox(height: 32),
+                  // ── Personalized Models (Adapters) ──
+                  if (_adapters.isNotEmpty || _adaptersLoading) ...[
+                    _buildSectionHeader(
+                      theme,
+                      'Personalized',
+                      count: _adapters.length,
+                      icon: Icons.auto_awesome_rounded,
+                      iconColor: _kAdapterPurple,
+                    ),
+                    const SizedBox(height: 4),
+                    if (_adaptersLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Center(
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
+                      )
+                    else
+                      ...sortedAdapters.map((adapter) => _PersonalizedModelCard(
+                            adapter: adapter,
+                            formatDate: _formatDate,
+                            onToggle: () => _toggleAdapter(adapter),
+                            onDelete: () => _deleteAdapter(adapter),
+                          )),
+                    const SizedBox(height: 10),
                   ],
 
-                  // Installed models
+                  // ── Installed Models ──
                   _buildSectionHeader(theme, 'Installed',
-                      count: _installedModels.length),
-                  const SizedBox(height: 12),
-                  if (_installedModels.isEmpty)
-                    _buildEmptySection(
-                      theme,
-                      icon: Icons.download_outlined,
-                      title: 'No models installed',
-                      subtitle: 'Download a model from the Discover section below',
-                    )
+                      count: installed.length),
+                  const SizedBox(height: 4),
+                  if (installed.isEmpty)
+                    _buildEmpty(theme, Icons.download_outlined,
+                        'No models installed',
+                        subtitle: 'Download a model below')
                   else
-                    ..._installedModels.map((model) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: ModelCard(
-                            model: model,
-                            onTap: () => _handleModelTap(model),
-                            trailing: PopupMenuButton<String>(
-                              icon: Icon(
-                                Icons.more_vert_rounded,
-                                size: 18,
-                                color: theme.colorScheme.secondary,
-                              ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              itemBuilder: (_) => [
-                                PopupMenuItem(
-                                  value: 'activate',
-                                  enabled:
-                                      model.id != _activeModelId,
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.play_arrow_rounded,
-                                          size: 16,
-                                          color: theme.colorScheme.secondary),
-                                      const SizedBox(width: 10),
-                                      Text('Set active',
-                                          style: GoogleFonts.inter(
-                                              fontSize: 9)),
-                                    ],
-                                  ),
-                                ),
-                                PopupMenuItem(
-                                  value: 'delete',
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.delete_outline_rounded,
-                                          size: 16,
-                                          color: theme.colorScheme.error),
-                                      const SizedBox(width: 10),
-                                      Text('Delete',
-                                          style: GoogleFonts.inter(
-                                            fontSize: 9,
-                                            color: theme.colorScheme.error,
-                                          )),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                              onSelected: (value) {
-                                if (value == 'activate') {
-                                  _handleModelTap(model);
-                                } else if (value == 'delete') {
-                                  _handleDeleteModel(model);
-                                }
-                              },
-                            ),
-                          ),
+                    ...installed.map((model) => _InstalledModelCard(
+                          model: model,
+                          isActive: model.name == local.activeModel,
+                          humanName: local.humanName(model.name),
+                          formatBytes: _formatBytes,
+                          onActivate: () => _activateModel(model),
+                          onDelete: () => _deleteModel(model),
+                          adapterName: _activeAdapterForModel(model.name),
                         )),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 10),
 
-                  // Discover section — curated models
+                  // ── Discover — downloadable models ──
                   _buildSectionHeader(theme, 'Discover',
-                      count: _curatedModels.length),
-                  const SizedBox(height: 12),
-                  if (_curatedModels.isEmpty)
-                    _buildEmptySection(
-                      theme,
-                      icon: Icons.explore_outlined,
-                      title: 'No additional models available',
-                      subtitle: 'All curated models are installed',
-                    )
+                      count: available.length),
+                  const SizedBox(height: 4),
+                  if (available.isEmpty)
+                    _buildEmpty(theme, Icons.check_circle_outline,
+                        'All curated models installed')
                   else
-                    ..._curatedModels.map((curated) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _CuratedModelCard(
-                            curated: curated,
-                            downloadStatus: _downloadStatuses[curated.id],
-                            downloadProgress:
-                                _downloadProgress[curated.id] ?? 0,
-                            formatBytes: _formatBytes,
-                            onDownload: () =>
-                                _handleDownloadCurated(curated),
-                          ),
+                    ...available.map((c) => _DiscoverCard(
+                          entry: c,
+                          isDownloading: _downloading[c.tag] == true,
+                          progress: _downloadProgress[c.tag] ?? 0,
+                          onDownload: () => _downloadModel(c.tag),
                         )),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 12),
                 ],
               ),
             ),
@@ -649,58 +652,81 @@ class _ModelsScreenState extends State<ModelsScreen> {
     );
   }
 
-  Widget _buildSectionHeader(ThemeData theme, String title, {int? count}) {
+  /// Returns the name of the active adapter for a given base model, or null.
+  String? _activeAdapterForModel(String modelTag) {
+    for (final a in _adapters) {
+      final isActive = a['is_active'] == true || a['is_active'] == 1;
+      if (!isActive) continue;
+      final baseModel = a['base_model_id'] as String? ?? '';
+      // Match by substring: adapter's base_model_id may be an Ollama tag or
+      // a GGUF reference. Do a best-effort match.
+      if (baseModel == modelTag ||
+          modelTag.startsWith(baseModel.split(':').first) ||
+          baseModel.startsWith(modelTag.split(':').first)) {
+        return a['name'] as String? ?? 'Adapter';
+      }
+    }
+    return null;
+  }
+
+  // ── Shared purple for adapter UI ──
+  static const _kAdapterPurple = Color(0xFF8B5CF6);
+
+  Widget _buildSectionHeader(
+    ThemeData theme,
+    String title, {
+    int? count,
+    IconData? icon,
+    Color? iconColor,
+  }) {
     return Row(
       children: [
-        Text(
-          title,
-          style: GoogleFonts.spaceGrotesk(
-            fontSize: 9,
-            fontWeight: FontWeight.w600,
-            color: theme.colorScheme.onSurface,
-          ),
-        ),
+        if (icon != null) ...[
+          Icon(icon, size: 14, color: iconColor ?? theme.colorScheme.primary),
+          const SizedBox(width: 4),
+        ],
+        Text(title,
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurface,
+            )),
         if (count != null && count > 0) ...[
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
+              color: (iconColor ?? theme.colorScheme.primary)
+                  .withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
             ),
-            child: Text(
-              '$count',
-              style: GoogleFonts.inter(
-                fontSize: 9,
-                fontWeight: FontWeight.w500,
-                color: theme.colorScheme.primary,
-              ),
-            ),
+            child: Text('$count',
+                style: GoogleFonts.inter(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w500,
+                  color: iconColor ?? theme.colorScheme.primary,
+                )),
           ),
         ],
       ],
     );
   }
 
-  Widget _buildEmptySection(
-    ThemeData theme, {
-    required IconData icon,
-    required String title,
-    String? subtitle,
-  }) {
+  Widget _buildEmpty(ThemeData theme, IconData icon, String title,
+      {String? subtitle}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 24),
+      padding: const EdgeInsets.symmetric(vertical: 16),
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon,
-                size: 40,
+                size: 28,
                 color: theme.colorScheme.secondary.withValues(alpha: 0.4)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Text(title,
                 style: GoogleFonts.inter(
-                  fontSize: 9,
+                  fontSize: 10,
                   color: theme.colorScheme.secondary,
                 )),
             if (subtitle != null) ...[
@@ -718,193 +744,647 @@ class _ModelsScreenState extends State<ModelsScreen> {
   }
 }
 
-/// Card for a curated model in the Discover section.
-class _CuratedModelCard extends StatelessWidget {
-  final CuratedModel curated;
-  final DownloadStatus? downloadStatus;
-  final double downloadProgress;
+// ── Shared purple constant for sub-widgets ──
+const _kAdapterPurple = Color(0xFF8B5CF6);
+
+// ── Curated model entry ──
+
+class _CuratedEntry {
+  final String tag;
+  final String name;
+  final String params;
+  final String description;
+  final String sizeEstimate;
+  final bool isLargeModel;
+
+  const _CuratedEntry({
+    required this.tag,
+    required this.name,
+    required this.params,
+    required this.description,
+    required this.sizeEstimate,
+    this.isLargeModel = false,
+  });
+}
+
+// ── Personalized model (adapter) card ──
+
+class _PersonalizedModelCard extends StatelessWidget {
+  final Map<String, dynamic> adapter;
+  final String Function(String?) formatDate;
+  final VoidCallback onToggle;
+  final VoidCallback onDelete;
+
+  const _PersonalizedModelCard({
+    required this.adapter,
+    required this.formatDate,
+    required this.onToggle,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final name = adapter['name'] as String? ?? 'Unnamed Adapter';
+    final baseModel = adapter['base_model_id'] as String? ?? '';
+    final sourceType = adapter['source_type'] as String? ?? '';
+    final createdAt = adapter['created_at'] as String? ?? '';
+    final isActive = adapter['is_active'] == true || adapter['is_active'] == 1;
+    final dateStr = formatDate(createdAt);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: isActive ? null : onToggle,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        decoration: BoxDecoration(
+          color: isActive
+              ? _kAdapterPurple.withValues(alpha: 0.06)
+              : null,
+          border: Border(
+            bottom: BorderSide(
+              color: theme.dividerColor,
+              width: 0.5,
+            ),
+          ),
+          // Highlighted left border for active adapter
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                // Adapter icon
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: isActive
+                        ? _kAdapterPurple.withValues(alpha: 0.12)
+                        : theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 13,
+                    color: isActive
+                        ? _kAdapterPurple
+                        : theme.colorScheme.secondary,
+                  ),
+                ),
+                const SizedBox(width: 8),
+
+                // Name + base model
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.inter(
+                            fontSize: 11,
+                            fontWeight:
+                                isActive ? FontWeight.w600 : FontWeight.w500,
+                            color: theme.colorScheme.onSurface,
+                          )),
+                      const SizedBox(height: 1),
+                      Row(
+                        children: [
+                          Icon(Icons.link_rounded,
+                              size: 10,
+                              color: theme.colorScheme.secondary),
+                          const SizedBox(width: 3),
+                          Flexible(
+                            child: Text(
+                              baseModel.isNotEmpty
+                                  ? 'Based on $baseModel'
+                                  : 'Unknown base model',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.inter(
+                                fontSize: 9,
+                                color: theme.colorScheme.secondary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Badges
+                const SizedBox(width: 6),
+
+                // Fine-tuned badge
+                _adapterBadge(theme, isActive),
+
+                const SizedBox(width: 4),
+
+                // Active status badge
+                if (isActive) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: _kAdapterPurple.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text('Active',
+                        style: GoogleFonts.inter(
+                          fontSize: 8,
+                          fontWeight: FontWeight.w600,
+                          color: _kAdapterPurple,
+                        )),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+
+                // Date
+                if (dateStr.isNotEmpty)
+                  Text(dateStr,
+                      style: GoogleFonts.inter(
+                        fontSize: 8,
+                        color: theme.colorScheme.secondary,
+                      )),
+
+                // Actions
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: PopupMenuButton<String>(
+                    icon: Icon(Icons.more_vert_rounded,
+                        size: 14, color: theme.colorScheme.secondary),
+                    padding: EdgeInsets.zero,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    itemBuilder: (_) => [
+                      if (!isActive)
+                        PopupMenuItem(
+                          value: 'activate',
+                          height: 32,
+                          child: Row(children: [
+                            Icon(Icons.play_arrow_rounded,
+                                size: 14,
+                                color: theme.colorScheme.secondary),
+                            const SizedBox(width: 8),
+                            Text('Activate',
+                                style: GoogleFonts.inter(fontSize: 10)),
+                          ]),
+                        ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        height: 32,
+                        child: Row(children: [
+                          Icon(Icons.delete_outline_rounded,
+                              size: 14, color: theme.colorScheme.error),
+                          const SizedBox(width: 8),
+                          Text('Delete',
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                color: theme.colorScheme.error,
+                              )),
+                        ]),
+                      ),
+                    ],
+                    onSelected: (v) {
+                      if (v == 'activate') onToggle();
+                      if (v == 'delete') onDelete();
+                    },
+                  ),
+                ),
+              ],
+            ),
+
+            // Source type chip row
+            if (sourceType.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 32, top: 2),
+                child: Row(
+                  children: [
+                    _sourceChip(theme, sourceType),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _adapterBadge(ThemeData theme, bool isActive) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: _kAdapterPurple.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: _kAdapterPurple.withValues(alpha: 0.2),
+          width: 0.5,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.auto_awesome_rounded,
+              size: 8, color: _kAdapterPurple),
+          const SizedBox(width: 2),
+          Text('Fine-tuned',
+              style: GoogleFonts.inter(
+                fontSize: 8,
+                fontWeight: FontWeight.w600,
+                color: _kAdapterPurple,
+              )),
+        ],
+      ),
+    );
+  }
+
+  Widget _sourceChip(ThemeData theme, String sourceType) {
+    final label = switch (sourceType) {
+      'collection' => 'Collection',
+      'extract_paste' => 'Extract',
+      'extract_file' => 'File extract',
+      _ => sourceType,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(label,
+          style: GoogleFonts.inter(
+            fontSize: 8,
+            fontWeight: FontWeight.w500,
+            color: theme.colorScheme.secondary,
+          )),
+    );
+  }
+}
+
+// ── Installed model card ──
+
+class _InstalledModelCard extends StatelessWidget {
+  final OllamaModel model;
+  final bool isActive;
+  final String humanName;
   final String Function(int) formatBytes;
+  final VoidCallback onActivate;
+  final VoidCallback onDelete;
+  final String? adapterName;
+
+  const _InstalledModelCard({
+    required this.model,
+    required this.isActive,
+    required this.humanName,
+    required this.formatBytes,
+    required this.onActivate,
+    required this.onDelete,
+    this.adapterName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final hasAdapter = adapterName != null;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: isActive ? null : onActivate,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primary.withValues(alpha: 0.05)
+              : null,
+          border: Border(
+            bottom: BorderSide(
+              color: theme.dividerColor,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                // Model icon
+                Icon(
+                  Icons.smart_toy_outlined,
+                  size: 14,
+                  color: isActive
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.secondary,
+                ),
+                const SizedBox(width: 8),
+
+                // Name
+                Expanded(
+                  child: Text(humanName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: isActive ? FontWeight.w500 : FontWeight.w400,
+                        color: theme.colorScheme.onSurface,
+                      )),
+                ),
+
+                // Active badge
+                if (isActive) ...[
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text('Active',
+                        style: GoogleFonts.inter(
+                          fontSize: 8,
+                          fontWeight: FontWeight.w500,
+                          color: theme.colorScheme.primary,
+                        )),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+
+                // Chips inline
+                if (model.parameterSize.isNotEmpty) ...[
+                  _chip(theme, model.parameterSize),
+                  const SizedBox(width: 4),
+                ],
+                if (model.quantization.isNotEmpty) ...[
+                  _chip(theme, model.quantization),
+                  const SizedBox(width: 4),
+                ],
+                Text(formatBytes(model.sizeBytes),
+                    style: GoogleFonts.inter(
+                      fontSize: 9,
+                      color: theme.colorScheme.secondary,
+                    )),
+
+                // Actions
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: PopupMenuButton<String>(
+                    icon: Icon(Icons.more_vert_rounded,
+                        size: 14, color: theme.colorScheme.secondary),
+                    padding: EdgeInsets.zero,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    itemBuilder: (_) => [
+                      if (!isActive)
+                        PopupMenuItem(
+                          value: 'activate',
+                          height: 32,
+                          child: Row(children: [
+                            Icon(Icons.play_arrow_rounded,
+                                size: 14, color: theme.colorScheme.secondary),
+                            const SizedBox(width: 8),
+                            Text('Set active',
+                                style: GoogleFonts.inter(fontSize: 10)),
+                          ]),
+                        ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        height: 32,
+                        child: Row(children: [
+                          Icon(Icons.delete_outline_rounded,
+                              size: 14, color: theme.colorScheme.error),
+                          const SizedBox(width: 8),
+                          Text('Delete',
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                color: theme.colorScheme.error,
+                              )),
+                        ]),
+                      ),
+                    ],
+                    onSelected: (v) {
+                      if (v == 'activate') onActivate();
+                      if (v == 'delete') onDelete();
+                    },
+                  ),
+                ),
+              ],
+            ),
+
+            // Adapter connection indicator
+            if (hasAdapter && isActive)
+              Padding(
+                padding: const EdgeInsets.only(left: 22, top: 2),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 1,
+                      height: 8,
+                      color: _kAdapterPurple.withValues(alpha: 0.3),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(Icons.auto_awesome_rounded,
+                        size: 9, color: _kAdapterPurple),
+                    const SizedBox(width: 3),
+                    Text(
+                      'Using adapter: $adapterName',
+                      style: GoogleFonts.inter(
+                        fontSize: 8,
+                        fontWeight: FontWeight.w500,
+                        color: _kAdapterPurple,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chip(ThemeData theme, String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(text,
+          style: GoogleFonts.inter(
+            fontSize: 8,
+            fontWeight: FontWeight.w500,
+            color: theme.colorScheme.secondary,
+          )),
+    );
+  }
+}
+
+// ── Discover card (downloadable) ──
+
+class _DiscoverCard extends StatelessWidget {
+  final _CuratedEntry entry;
+  final bool isDownloading;
+  final double progress;
   final VoidCallback onDownload;
 
-  const _CuratedModelCard({
-    required this.curated,
-    this.downloadStatus,
-    required this.downloadProgress,
-    required this.formatBytes,
+  const _DiscoverCard({
+    required this.entry,
+    required this.isDownloading,
+    required this.progress,
     required this.onDownload,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDownloading = downloadStatus == DownloadStatus.downloading;
-    final isError = downloadStatus == DownloadStatus.error;
 
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Model info
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        curated.name,
-                        style: GoogleFonts.spaceGrotesk(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                          color: theme.colorScheme.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          _InfoChip(
-                            text: curated.sizeLabel,
-                            theme: theme,
-                          ),
-                          const SizedBox(width: 8),
-                          _InfoChip(
-                            text: '${curated.paramsBillion}B params',
-                            theme: theme,
-                          ),
-                          if (curated.quant != null) ...[
-                            const SizedBox(width: 8),
-                            _InfoChip(
-                              text: curated.quant!,
-                              theme: theme,
-                            ),
-                          ],
-                        ],
-                      ),
-                      if (curated.description != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          curated.description!,
-                          maxLines: 2,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: theme.dividerColor, width: 0.5),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              // Name + chips
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(entry.name,
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: GoogleFonts.inter(
-                            fontSize: 9,
-                            color: theme.colorScheme.secondary,
-                            height: 1.4,
-                          ),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: theme.colorScheme.onSurface,
+                          )),
+                    ),
+                    const SizedBox(width: 6),
+                    _chip(theme, entry.params),
+                    const SizedBox(width: 4),
+                    _chip(theme, entry.sizeEstimate),
+                    if (entry.isLargeModel) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 0),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
                         ),
-                      ],
-                      const SizedBox(height: 4),
-                      Text(
-                        formatBytes(curated.diskBytes),
-                        style: GoogleFonts.inter(
-                          fontSize: 9,
-                          color: theme.colorScheme.secondary,
-                        ),
+                        child: Text('SpliceLLM',
+                            style: GoogleFonts.inter(
+                              fontSize: 8,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange.shade700,
+                            )),
                       ),
                     ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Download button
+              if (!isDownloading)
+                FilledButton.icon(
+                  onPressed: onDownload,
+                  icon: const Icon(Icons.download_rounded, size: 12),
+                  label: const Text('Download'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: theme.colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: GoogleFonts.inter(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
                   ),
                 ),
-
-                // Download button
-                if (!isDownloading)
-                  FilledButton.icon(
-                    onPressed: isError ? onDownload : onDownload,
-                    icon: Icon(
-                      isError
-                          ? Icons.refresh_rounded
-                          : Icons.download_rounded,
-                      size: 16,
-                    ),
-                    label: Text(isError ? 'Retry' : 'Download'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: isError
-                          ? theme.colorScheme.error
-                          : theme.colorScheme.primary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      textStyle: GoogleFonts.inter(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-              ],
+            ],
+          ),
+          // Description
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(entry.description,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 9,
+                    color: theme.colorScheme.secondary,
+                    height: 1.2,
+                  )),
             ),
-
-            // Download progress bar
-            if (isDownloading) ...[
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Downloading...',
+          ),
+          if (isDownloading) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Downloading...',
                     style: GoogleFonts.inter(
                       fontSize: 9,
                       color: theme.colorScheme.secondary,
-                    ),
-                  ),
-                  Text(
-                    '${(downloadProgress * 100).toInt()}%',
+                    )),
+                Text('${(progress * 100).toInt()}%',
                     style: GoogleFonts.inter(
                       fontSize: 9,
                       fontWeight: FontWeight.w500,
                       color: theme.colorScheme.primary,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: downloadProgress,
-                  minHeight: 4,
-                  backgroundColor:
-                      theme.colorScheme.primary.withValues(alpha: 0.1),
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    theme.colorScheme.primary,
-                  ),
+                    )),
+              ],
+            ),
+            const SizedBox(height: 2),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 2,
+                backgroundColor:
+                    theme.colorScheme.primary.withValues(alpha: 0.1),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  theme.colorScheme.primary,
                 ),
               ),
-            ],
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
-}
 
-class _InfoChip extends StatelessWidget {
-  final String text;
-  final ThemeData theme;
-
-  const _InfoChip({required this.text, required this.theme});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _chip(ThemeData theme, String text) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(
-        text,
-        style: GoogleFonts.inter(
-          fontSize: 9,
-          fontWeight: FontWeight.w500,
-          color: theme.colorScheme.secondary,
-        ),
-      ),
+      child: Text(text,
+          style: GoogleFonts.inter(
+            fontSize: 8,
+            fontWeight: FontWeight.w500,
+            color: theme.colorScheme.secondary,
+          )),
     );
   }
 }

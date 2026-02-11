@@ -33,6 +33,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   double _downloadProgress = 0;
   String _downloadStatus = '';
   String? _downloadError;
+  bool _isPaused = false;
+  int _totalBytes = 0; // remembered across pause/resume cycles
 
   @override
   Widget build(BuildContext context) {
@@ -305,6 +307,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // ── Step 4: Download (direct from HuggingFace, no backend needed) ──
+  //    Supports pause/resume via HTTP Range headers.
 
   Future<void> _startDownload() async {
     try {
@@ -318,10 +321,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final rec = _recommended!;
       final destFile = File('${modelsDir.path}/${rec.filename}');
 
-      // If already downloaded, skip straight to chat
-      if (await destFile.exists() && await destFile.length() > 1024 * 1024) {
-        if (mounted) _goToFirstChat();
-        return;
+      // Check for existing (possibly partial) file
+      int existingBytes = 0;
+      if (await destFile.exists()) {
+        existingBytes = await destFile.length();
+        // If we know total and file is already complete, skip to chat
+        if (_totalBytes > 0 && existingBytes >= _totalBytes) {
+          if (mounted) _goToFirstChat();
+          return;
+        }
       }
 
       // Download directly from HuggingFace using RandomAccessFile for
@@ -332,25 +340,53 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       client.autoUncompress = false;
 
       final request = await client.getUrl(Uri.parse(rec.downloadUrl));
+
+      // Add Range header for resume
+      if (existingBytes > 0) {
+        request.headers.add('Range', 'bytes=$existingBytes-');
+      }
+
       final response = await request.close();
 
-      if (response.statusCode != 200) {
+      // Handle Range responses
+      if (response.statusCode == 416) {
+        // Range not satisfiable — file is already complete
+        if (mounted) _goToFirstChat();
+        return;
+      }
+
+      if (response.statusCode != 200 && response.statusCode != 206) {
         throw Exception('HTTP ${response.statusCode}');
       }
 
-      final totalBytes = response.contentLength;
-      int receivedBytes = 0;
-      final raf = await destFile.open(mode: FileMode.write);
+      // Determine total bytes
+      if (response.statusCode == 206) {
+        final contentRange = response.headers.value('content-range') ?? '';
+        if (contentRange.contains('/')) {
+          final total = contentRange.split('/').last;
+          if (total != '*') {
+            _totalBytes = int.parse(total);
+          }
+        }
+      } else {
+        _totalBytes = response.contentLength;
+        existingBytes = 0; // Server didn't honor Range
+      }
+
+      int receivedBytes = existingBytes;
+      final fileMode =
+          response.statusCode == 206 ? FileMode.append : FileMode.write;
+      final raf = await destFile.open(mode: fileMode);
       final stopwatch = Stopwatch()..start();
 
       try {
         await for (final chunk in response) {
-          if (!mounted) break;
+          if (!mounted || _isPaused) break;
           await raf.writeFrom(chunk);
           receivedBytes += chunk.length;
 
           final progress =
-              totalBytes > 0 ? receivedBytes / totalBytes : 0.0;
+              _totalBytes > 0 ? receivedBytes / _totalBytes : 0.0;
 
           // ETA
           String eta = '';
@@ -366,15 +402,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           }
 
           // Speed
-          final mbReceived = receivedBytes / (1024 * 1024);
+          final sessionMb = (receivedBytes - existingBytes) / (1024 * 1024);
           final seconds = stopwatch.elapsedMilliseconds / 1000;
-          final speed = seconds > 0 ? mbReceived / seconds : 0.0;
+          final speed = seconds > 0 ? sessionMb / seconds : 0.0;
           final speedStr = '${speed.toStringAsFixed(1)} MB/s';
 
           setState(() {
             _downloadProgress = progress;
             _downloadStatus =
-                '${mbReceived.toStringAsFixed(0)} MB${totalBytes > 0 ? " / ${(totalBytes / (1024 * 1024)).toStringAsFixed(0)} MB" : ""} — $speedStr${eta.isNotEmpty ? " — $eta" : ""}';
+                '${(receivedBytes / (1024 * 1024)).toStringAsFixed(0)} MB${_totalBytes > 0 ? " / ${(_totalBytes / (1024 * 1024)).toStringAsFixed(0)} MB" : ""} — $speedStr${eta.isNotEmpty ? " — $eta" : ""}';
           });
         }
       } finally {
@@ -382,8 +418,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         client.close();
       }
 
-      if (mounted) _goToFirstChat();
+      // If paused, show paused status and return (download will resume later)
+      if (_isPaused) {
+        if (mounted) {
+          setState(() {
+            _downloadStatus =
+                'Paused — ${(receivedBytes / (1024 * 1024)).toStringAsFixed(0)} MB downloaded';
+          });
+        }
+        return;
+      }
+
+      if (mounted && !_isPaused) _goToFirstChat();
     } catch (e) {
+      if (_isPaused) return; // Don't show error on user-initiated pause
       if (mounted) {
         setState(() {
           _downloadError =
@@ -391,6 +439,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         });
       }
     }
+  }
+
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (!_isPaused) {
+        // Resume — restart download with Range header from where we left off
+        _downloadError = null;
+        _startDownload();
+      }
+    });
   }
 
   void _goToFirstChat() {
@@ -411,7 +470,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       key: const ValueKey('download'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text('Downloading ${_recommended?.name ?? "model"}...',
+        Text(
+            _isPaused
+                ? 'Download Paused'
+                : 'Downloading ${_recommended?.name ?? "model"}...',
             style: theme.textTheme.headlineMedium,
             textAlign: TextAlign.center),
         const SizedBox(height: 8),
@@ -424,13 +486,35 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           child: LinearProgressIndicator(
             value: _downloadProgress > 0 ? _downloadProgress : null,
             minHeight: 6,
+            color: _isPaused
+                ? theme.colorScheme.secondary
+                : theme.colorScheme.primary,
           ),
         ),
         const SizedBox(height: 12),
-        Text(_downloadStatus.isNotEmpty ? _downloadStatus : 'Starting download...',
+        Text(
+            _downloadStatus.isNotEmpty
+                ? _downloadStatus
+                : 'Starting download...',
             style: theme.textTheme.bodySmall),
+        const SizedBox(height: 16),
+
+        // ── Pause / Resume button ──
+        if (_downloadError == null)
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _togglePause,
+              icon: Icon(
+                _isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                size: 20,
+              ),
+              label: Text(_isPaused ? 'Resume Download' : 'Pause Download'),
+            ),
+          ),
+
         if (_downloadError != null) ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -459,6 +543,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       _downloadError = null;
                       _downloadProgress = 0;
                       _downloadStatus = '';
+                      _isPaused = false;
                     });
                     _startDownload();
                   },

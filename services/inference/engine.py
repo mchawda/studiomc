@@ -1,4 +1,4 @@
-"""Studiomc inference engine — wraps the out-of-core engine for the service layer.
+"""SpliceLLM inference engine — wraps the out-of-core engine for the service layer.
 
 Provides the public API used by the router and backends:
     - load_model / unload_model

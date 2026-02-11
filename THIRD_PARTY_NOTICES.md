@@ -32,7 +32,7 @@ This file contains an inventory of all third-party components used in Studiomc, 
 
 | Component | License | Source URL |
 |-----------|---------|------------|
-| AirLLM (inspiration) | Apache-2.0 | https://github.com/lyogavin/airllm |
+| AirLLM (inspiration for SpliceLLM) | Apache-2.0 | https://github.com/lyogavin/airllm |
 | PyTorch | BSD-3-Clause | https://github.com/pytorch/pytorch |
 | Transformers | Apache-2.0 | https://github.com/huggingface/transformers |
 | Accelerate | Apache-2.0 | https://github.com/huggingface/accelerate |

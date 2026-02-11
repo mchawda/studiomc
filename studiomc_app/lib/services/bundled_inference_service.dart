@@ -4,140 +4,169 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 
-/// Manages the bundled llama-server binary — zero external dependencies.
+/// Manages the SpliceLLM Python inference service.
+///
+/// This is the engine that can run models of ANY size by streaming
+/// layers from disk — even 20B+ models on 8GB machines.
 ///
 /// On launch:
-///   1. Locates llama-server in the app bundle Resources/bin/
-///   2. Starts it on a local port with the active model
-///   3. Provides an OpenAI-compatible API at http://127.0.0.1:{port}
+///   1. Locates the Python venv and services directory
+///   2. Starts the FastAPI inference service via uvicorn on port 8100
+///   3. Provides OpenAI-compatible API at http://127.0.0.1:8100
 ///
-/// Models are GGUF files downloaded from HuggingFace, stored in
-/// ~/Library/Application Support/com.studiomc/models/
+/// The service auto-detects Ollama, LM Studio, and uses the built-in
+/// SpliceLLM as fallback for models too large for RAM.
 class BundledInferenceService extends ChangeNotifier {
-  static const _defaultPort = 8690;
-  static const _baseUrl = 'http://127.0.0.1:$_defaultPort';
+  static const _port = 8100;
+  static const _baseUrl = 'http://127.0.0.1:$_port';
 
   final http.Client _http = http.Client();
 
   Process? _serverProcess;
   bool _available = false;
   bool _starting = false;
-  String? _activeModel; // Full path to loaded GGUF
-  String? _activeModelName; // Friendly name
-  List<String> _localModels = []; // Paths to available GGUF files
+  String? _activeModel;
+  List<String> _localModels = [];
 
   double _tokPerS = 0.0;
 
   // ── Getters ──
   bool get available => _available;
   bool get starting => _starting;
-  String? get activeModel => _activeModelName;
-  String? get activeModelPath => _activeModel;
+  String? get activeModel => _activeModel;
   List<String> get localModels => List.unmodifiable(_localModels);
   double get tokPerS => _tokPerS;
 
-  /// Initialize: scan for local models, optionally start server with preferred model.
+  /// Path to the Python venv on the external drive (or bundled location).
+  String? _venvPython;
+  String? _servicesDir;
+
+  /// Initialize: find Python, start the inference service.
   Future<bool> init({String? preferredModel}) async {
-    await _scanLocalModels();
+    _resolveServicePaths();
 
-    // Resolve preferred model to a local GGUF path
-    String? modelPath;
-    if (preferredModel != null) {
-      modelPath = _resolveModel(preferredModel);
-    }
-    modelPath ??= _localModels.isNotEmpty ? _localModels.first : null;
-
-    if (modelPath == null) {
-      // No models available — service ready but not running
+    if (_venvPython == null || _servicesDir == null) {
+      debugPrint('[splicellm] Python venv or services dir not found');
       _available = false;
       notifyListeners();
       return false;
     }
 
-    return await startServer(modelPath);
-  }
-
-  /// Scan the models directory for GGUF files.
-  Future<void> _scanLocalModels() async {
-    final modelsDir = await _modelsDirectory();
-    if (!await modelsDir.exists()) {
-      _localModels = [];
-      return;
+    // Check if the service is already running
+    if (await _checkHealth()) {
+      _available = true;
+      await _loadModels();
+      notifyListeners();
+      return true;
     }
 
-    final models = <String>[];
-    await for (final entity in modelsDir.list()) {
-      if (entity is File && entity.path.toLowerCase().endsWith('.gguf')) {
-        models.add(entity.path);
+    return await _startService();
+  }
+
+  /// Resolve paths to the Python venv and services directory.
+  void _resolveServicePaths() {
+    // Try multiple locations for the services directory
+    final candidates = <String>[
+      // Development: relative to the Flutter project
+      _joinPath(Directory.current.path, '..', 'services'),
+      // Built app: bundled in Resources
+      _joinPath(
+          File(Platform.resolvedExecutable).parent.path,
+          '..', 'Resources', 'services'),
+      // External drive common location
+      '/Volumes/External Drive/dev/projects/Studiomc/services',
+    ];
+
+    for (final dir in candidates) {
+      final normalized = _normalizePath(dir);
+      if (Directory(normalized).existsSync()) {
+        _servicesDir = normalized;
+
+        // Check for venv inside services dir
+        final venvPython = _joinPath(normalized, '.venv', 'bin', 'python3');
+        if (File(venvPython).existsSync()) {
+          _venvPython = venvPython;
+          debugPrint('[splicellm] Found venv at $venvPython');
+          debugPrint('[splicellm] Services dir: $normalized');
+          return;
+        }
       }
     }
-    _localModels = models;
+
+    // Fallback: try system Python
+    try {
+      final result = Process.runSync('which', ['python3']);
+      if (result.exitCode == 0) {
+        final systemPython = (result.stdout as String).trim();
+        _venvPython = systemPython;
+        debugPrint(
+            '[splicellm] Using system Python: $systemPython');
+      }
+    } catch (_) {}
   }
 
-  /// Start llama-server with a specific model.
-  Future<bool> startServer(String modelPath) async {
+  /// Start the Python inference service.
+  Future<bool> _startService() async {
     if (_starting) return false;
     _starting = true;
     notifyListeners();
 
-    // Kill existing server if running
-    await stopServer();
-
-    final serverBin = _findServerBinary();
-    if (serverBin == null) {
-      debugPrint('[bundled-inference] llama-server binary not found');
-      _starting = false;
-      notifyListeners();
-      return false;
-    }
+    // Kill any existing process on the port
+    await _killExisting();
 
     try {
-      final binDir = File(serverBin).parent.path;
-
-      // Set DYLD_LIBRARY_PATH so llama-server can find its dylibs
-      final env = Map<String, String>.from(Platform.environment);
-      env['DYLD_LIBRARY_PATH'] = binDir;
+      debugPrint('[splicellm] Starting inference service...');
+      debugPrint('[splicellm] Python: $_venvPython');
+      debugPrint('[splicellm] Working dir: $_servicesDir');
 
       _serverProcess = await Process.start(
-        serverBin,
+        _venvPython!,
         [
-          '--model', modelPath,
+          '-m', 'uvicorn',
+          'inference.app:app',
           '--host', '127.0.0.1',
-          '--port', '$_defaultPort',
-          '--ctx-size', '4096',
-          '--n-gpu-layers', '99', // Use Metal/GPU fully
-          '--flash-attn', // Enable flash attention
+          '--port', '$_port',
         ],
-        environment: env,
+        workingDirectory: _servicesDir,
+        environment: {
+          ...Platform.environment,
+          'PYTHONPATH': _servicesDir!,
+        },
       );
 
       _serverProcess!.stdout
           .transform(utf8.decoder)
-          .listen((data) => debugPrint('[llama-server] $data'));
+          .listen((data) => debugPrint('[splicellm] $data'));
       _serverProcess!.stderr
           .transform(utf8.decoder)
-          .listen((data) => debugPrint('[llama-server:err] $data'));
+          .listen((data) => debugPrint('[studiomc-engine:err] $data'));
 
       _serverProcess!.exitCode.then((code) {
-        debugPrint('[bundled-inference] llama-server exited: $code');
+        debugPrint('[splicellm] Service exited: $code');
         _available = false;
         _serverProcess = null;
         notifyListeners();
       });
 
-      // Wait for server to become healthy
-      final healthy = await _waitForHealth(timeout: const Duration(seconds: 30));
+      // Wait for the service to become healthy
+      final healthy =
+          await _waitForHealth(timeout: const Duration(seconds: 30));
 
-      _activeModel = modelPath;
-      _activeModelName = _friendlyName(modelPath);
-      _available = healthy;
+      if (healthy) {
+        _available = true;
+        await _loadModels();
+        debugPrint('[splicellm] Service ready on port $_port');
+      } else {
+        debugPrint('[splicellm] Service failed to become healthy');
+        _available = false;
+      }
+
       _starting = false;
       notifyListeners();
       return healthy;
     } catch (e) {
-      debugPrint('[bundled-inference] Failed to start: $e');
+      debugPrint('[splicellm] Failed to start: $e');
       _starting = false;
       _available = false;
       notifyListeners();
@@ -145,36 +174,66 @@ class BundledInferenceService extends ChangeNotifier {
     }
   }
 
-  /// Switch to a different model (restarts server).
-  Future<bool> switchModel(String modelPath) async {
-    return await startServer(modelPath);
-  }
-
-  /// Stop the server.
-  Future<void> stopServer() async {
-    if (_serverProcess != null) {
-      _serverProcess!.kill(ProcessSignal.sigterm);
-      try {
-        await _serverProcess!.exitCode.timeout(const Duration(seconds: 5));
-      } catch (_) {
-        _serverProcess!.kill(ProcessSignal.sigkill);
+  /// Load model list from the service.
+  Future<void> _loadModels() async {
+    try {
+      final resp = await _http
+          .get(Uri.parse('$_baseUrl/v1/models'))
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final models = data['data'] as List<dynamic>? ?? [];
+        _localModels = models
+            .map((m) => (m as Map<String, dynamic>)['id'] as String? ?? '')
+            .where((id) => id.isNotEmpty)
+            .toList();
+        _activeModel = data['active_model'] as String?;
       }
-      _serverProcess = null;
+    } catch (e) {
+      debugPrint('[splicellm] Failed to load models: $e');
     }
-    _available = false;
   }
 
-  /// Stream a chat completion. Yields token strings.
+  /// Select and load a model for inference.
+  Future<bool> selectModel(String modelId,
+      {String? backend, String? modelPath}) async {
+    try {
+      final body = <String, dynamic>{'model_id': modelId};
+      if (backend != null) body['backend'] = backend;
+
+      final resp = await _http.post(
+        Uri.parse('$_baseUrl/v1/models/select'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode(body),
+      );
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        _activeModel = data['active_model'] as String? ?? modelId;
+        notifyListeners();
+        return true;
+      }
+      debugPrint(
+          '[splicellm] Model select failed: ${resp.statusCode} ${resp.body}');
+      return false;
+    } catch (e) {
+      debugPrint('[splicellm] Model select error: $e');
+      return false;
+    }
+  }
+
+  /// Stream a chat completion via SSE. Yields token strings.
   Stream<String> streamChat({
     required List<Map<String, String>> messages,
+    String? model,
   }) async* {
     if (!_available) {
-      yield '[Error: Inference engine not running]';
+      yield '[Error: SpliceLLM not running]';
       return;
     }
 
     final body = jsonEncode({
-      'model': _activeModelName ?? 'local',
+      'model': model ?? _activeModel ?? 'auto',
       'messages': messages,
       'stream': true,
     });
@@ -188,7 +247,7 @@ class BundledInferenceService extends ChangeNotifier {
     try {
       response = await _http.send(request);
     } catch (e) {
-      yield '[Error: Could not connect to inference engine — $e]';
+      yield '[Error: Could not connect to SpliceLLM — $e]';
       return;
     }
 
@@ -217,7 +276,6 @@ class BundledInferenceService extends ChangeNotifier {
             totalTokens++;
             yield content;
           }
-          // Check for finish_reason
           final finishReason = choices[0]['finish_reason'];
           if (finishReason != null) {
             stopwatch.stop();
@@ -227,9 +285,7 @@ class BundledInferenceService extends ChangeNotifier {
               notifyListeners();
             }
           }
-        } catch (_) {
-          // Skip malformed SSE lines
-        }
+        } catch (_) {}
       }
     }
   }
@@ -237,6 +293,7 @@ class BundledInferenceService extends ChangeNotifier {
   /// Non-streaming completion.
   Future<String?> chatCompletion({
     required List<Map<String, String>> messages,
+    String? model,
   }) async {
     if (!_available) return null;
 
@@ -245,7 +302,7 @@ class BundledInferenceService extends ChangeNotifier {
         Uri.parse('$_baseUrl/v1/chat/completions'),
         headers: {'content-type': 'application/json'},
         body: jsonEncode({
-          'model': _activeModelName ?? 'local',
+          'model': model ?? _activeModel ?? 'auto',
           'messages': messages,
           'stream': false,
         }),
@@ -260,99 +317,99 @@ class BundledInferenceService extends ChangeNotifier {
     }
   }
 
-  /// Friendly model name from GGUF file path.
-  String humanName(String path) => _friendlyName(path);
-
-  // ── Private helpers ──
-
-  Future<bool> _waitForHealth({Duration timeout = const Duration(seconds: 30)}) async {
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        final resp = await _http
-            .get(Uri.parse('$_baseUrl/health'))
-            .timeout(const Duration(seconds: 2));
-        if (resp.statusCode == 200) {
-          final data = jsonDecode(resp.body) as Map<String, dynamic>;
-          if (data['status'] == 'ok') return true;
-        }
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-    return false;
-  }
-
-  String? _findServerBinary() {
-    // 1. Check app bundle Resources/bin/
-    final executable = Platform.resolvedExecutable;
-    final appDir = File(executable).parent.path;
-    // In a macOS .app: .app/Contents/MacOS/studiomc_app
-    // Resources at: .app/Contents/Frameworks/App.framework/Resources/
-    // But we put binaries in: .app/Contents/Resources/bin/
-    final bundledPath = '$appDir/../Resources/bin/llama-server';
-    if (File(bundledPath).existsSync()) return bundledPath;
-
-    // 2. Check relative to project (development)
-    // When running via `flutter run`, executable is in build/macos/...
-    final devPaths = [
-      '$appDir/../../../../../../macos/Runner/Resources/bin/llama-server',
-      // Direct path for development
-      '${Directory.current.path}/macos/Runner/Resources/bin/llama-server',
-    ];
-    for (final p in devPaths) {
-      if (File(p).existsSync()) return p;
-    }
-
-    // 3. Check PATH (fallback, e.g. if user installed llama.cpp)
-    try {
-      final result = Process.runSync('which', ['llama-server']);
-      if (result.exitCode == 0) {
-        return (result.stdout as String).trim();
-      }
-    } catch (_) {}
-
-    return null;
-  }
-
-  Future<Directory> _modelsDirectory() async {
-    final appDir = await getApplicationSupportDirectory();
-    return Directory('${appDir.path}/models');
-  }
-
-  /// Resolve a model preference (GGUF filename, path, or partial name) to a local path.
-  String? _resolveModel(String preference) {
-    // Exact path
-    if (File(preference).existsSync()) return preference;
-
-    // Match by filename
-    final lower = preference.toLowerCase();
-    for (final path in _localModels) {
-      final filename = path.split('/').last.toLowerCase();
-      if (filename == lower || filename.contains(lower)) return path;
-    }
-    return null;
-  }
-
-  /// Convert GGUF path to friendly name.
-  String _friendlyName(String path) {
+  /// Friendly model name.
+  String humanName(String path) {
     var name = path.split('/').last;
     name = name
         .replaceAll('.gguf', '')
         .replaceAll('.bin', '')
         .replaceAll(RegExp(r'-q\d.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'[-_]instruct', caseSensitive: false), '')
-        .replaceAll(RegExp(r'[-_]chat', caseSensitive: false), '')
-        .replaceAll(RegExp(r'Meta-', caseSensitive: false), '')
         .replaceAll('-', ' ')
         .replaceAll('_', ' ')
         .trim();
-    // Title case
     name = name.split(' ').map((w) {
       if (w.isEmpty) return w;
       if (RegExp(r'^\d').hasMatch(w)) return w;
       return '${w[0].toUpperCase()}${w.substring(1)}';
     }).join(' ');
     return name.isEmpty ? path.split('/').last : name;
+  }
+
+  /// Stop the service.
+  Future<void> stopServer() async {
+    if (_serverProcess != null) {
+      _serverProcess!.kill(ProcessSignal.sigterm);
+      try {
+        await _serverProcess!.exitCode.timeout(const Duration(seconds: 5));
+      } catch (_) {
+        _serverProcess!.kill(ProcessSignal.sigkill);
+      }
+      _serverProcess = null;
+    }
+    _available = false;
+  }
+
+  // Switch model (restarts if needed).
+  Future<bool> switchModel(String modelId) async {
+    return await selectModel(modelId);
+  }
+
+  // ── Private helpers ──
+
+  Future<bool> _checkHealth() async {
+    try {
+      final resp = await _http
+          .get(Uri.parse('$_baseUrl/health'))
+          .timeout(const Duration(seconds: 3));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        return data['status'] == 'ok';
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<bool> _waitForHealth(
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (await _checkHealth()) return true;
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    return false;
+  }
+
+  Future<void> _killExisting() async {
+    try {
+      final result = await Process.run('lsof', ['-ti:$_port']);
+      if (result.exitCode == 0) {
+        final pids = (result.stdout as String).trim().split('\n');
+        for (final pid in pids) {
+          if (pid.isNotEmpty) {
+            await Process.run('kill', ['-9', pid]);
+          }
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
+    } catch (_) {}
+  }
+
+  String _joinPath(String a, String b, [String? c, String? d]) {
+    var result = '$a/$b';
+    if (c != null) result = '$result/$c';
+    if (d != null) result = '$result/$d';
+    return result;
+  }
+
+  String _normalizePath(String path) {
+    try {
+      final dir = Directory(path);
+      if (dir.existsSync()) {
+        return dir.resolveSymbolicLinksSync();
+      }
+    } catch (_) {}
+    return path;
   }
 
   @override

@@ -131,9 +131,12 @@ async def run_reasoning(request: ReasoningRequest) -> ReasoningResponse:
         "depth": state.depth,
     }
 
+    groundedness = _compute_groundedness(answer, state.citations)
+
     response = ReasoningResponse(
         answer=answer,
         citations=state.citations,
+        groundedness=groundedness,
         trace=state.trace,
         metrics=metrics,
         stopped_reason=state.stopped_reason,
@@ -441,6 +444,58 @@ async def run_sub_query(
     )
 
     return answer
+
+
+# ── Groundedness calculation ────────────────────────────────────────
+
+
+def _compute_groundedness(
+    answer: str,
+    citations: list[Citation],
+    relevance_threshold: float = 0.5,
+) -> float:
+    """Compute groundedness as the fraction of answer claims supported by citations.
+
+    A "claim" is approximated as a sentence in the answer.
+    A claim is "supported" if there exists at least one citation whose
+    ``relevance_score`` exceeds *relevance_threshold*.
+
+    Returns a float between 0.0 and 1.0.  If there are no claims or no
+    citations the result is 0.0.
+    """
+
+    if not answer or not citations:
+        return 0.0
+
+    import re
+
+    # Split answer into sentences (claims)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
+    total_claims = len(sentences)
+    if total_claims == 0:
+        return 0.0
+
+    # Count citations that meet the relevance threshold
+    strong_citations = [c for c in citations if c.relevance_score > relevance_threshold]
+    if not strong_citations:
+        return 0.0
+
+    # For each sentence, check whether any strong citation's snippet shares
+    # significant keyword overlap (lightweight heuristic — no NLI model).
+    supported = 0
+    for sentence in sentences:
+        sentence_words = set(re.findall(r"\w{3,}", sentence.lower()))
+        if not sentence_words:
+            continue
+        for cit in strong_citations:
+            cit_words = set(re.findall(r"\w{3,}", cit.snippet.lower()))
+            overlap = sentence_words & cit_words
+            # If ≥30 % of sentence words appear in the citation → supported
+            if len(overlap) >= max(1, len(sentence_words) * 0.3):
+                supported += 1
+                break
+
+    return round(supported / total_claims, 4)
 
 
 # ── Database persistence ────────────────────────────────────────────

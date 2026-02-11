@@ -4,8 +4,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'package:studiomc_app/models/app_models.dart';
-import 'package:studiomc_app/services/chat_service.dart';
+import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/widgets/chat/conversation_controls.dart';
 
 /// Perplexity-inspired app shell.
@@ -28,14 +29,31 @@ class _AppShellState extends State<AppShell> {
   bool _chatsLoading = false;
   bool _chatsLoaded = false;
 
-  // ── Load chats from ChatService ──
+  // ── Load chats from local SQLite ──
 
   Future<void> _loadChats() async {
     if (_chatsLoading) return;
     setState(() => _chatsLoading = true);
 
     try {
-      final chats = await ChatService().listChats();
+      final db = context.read<DatabaseService>();
+      final rows = await db.getChats();
+      final chats = rows.map((r) {
+        return Chat(
+          id: r['id'] as String? ?? '',
+          title: r['title'] as String? ?? 'Untitled',
+          modelId: r['model_id'] as String? ?? '',
+          mode: PresetMode.defaultMode,
+          createdAt:
+              DateTime.tryParse(r['created_at'] as String? ?? '') ??
+                  DateTime.now(),
+          updatedAt:
+              DateTime.tryParse(r['updated_at'] as String? ?? '') ??
+                  DateTime.now(),
+          isPinned: false,
+        );
+      }).toList();
+
       if (mounted) {
         setState(() {
           _chats = chats;
@@ -53,21 +71,32 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  // ── Chat action handlers ──
+  // ── Chat action handlers (local SQLite) ──
 
   Future<void> _renameChat(String chatId, String newTitle) async {
-    await ChatService().updateChat(chatId, title: newTitle);
+    final db = context.read<DatabaseService>();
+    await db.updateChat(chatId, {'title': newTitle});
     _loadChats();
   }
 
   Future<void> _pinChat(String chatId, bool pin) async {
-    await ChatService().updateChat(chatId, pinned: pin);
-    _loadChats();
+    // Pin not yet a DB column — ignore silently
   }
 
   Future<void> _exportChat(String chatId, String title) async {
-    final markdown = await ChatService().exportChat(chatId);
-    if (markdown == null || markdown.isEmpty || !mounted) return;
+    final db = context.read<DatabaseService>();
+    final messages = await db.getMessages(chatId);
+    if (messages.isEmpty || !mounted) return;
+
+    final buf = StringBuffer();
+    buf.writeln('# $title\n');
+    for (final m in messages) {
+      final role = (m['role'] as String?) ?? 'user';
+      final content = (m['content'] as String?) ?? '';
+      buf.writeln('**${role[0].toUpperCase()}${role.substring(1)}:**\n');
+      buf.writeln('$content\n');
+      buf.writeln('---\n');
+    }
 
     try {
       final safeName = title
@@ -83,18 +112,16 @@ class _AppShellState extends State<AppShell> {
       );
 
       if (outputPath != null) {
-        await File(outputPath).writeAsString(markdown);
+        await File(outputPath).writeAsString(buf.toString());
       }
-    } catch (_) {
-      // Silently handle
-    }
+    } catch (_) {}
   }
 
   Future<void> _deleteChat(String chatId) async {
-    await ChatService().deleteChat(chatId);
+    final db = context.read<DatabaseService>();
+    await db.deleteChat(chatId);
     _loadChats();
 
-    // If we just deleted the current chat, navigate to /chat
     if (mounted) {
       final uri = GoRouterState.of(context).uri.toString();
       if (uri.contains(chatId)) {
@@ -281,35 +308,21 @@ class _AppShellState extends State<AppShell> {
 
           const SizedBox(height: 4),
 
-          // Performance
+          // Personalize
           _buildRailIcon(
             context,
             child: Icon(
-              Icons.speed_outlined,
+              Icons.auto_awesome_outlined,
               size: 22,
-              color: currentPath == '/performance'
+              color: currentPath == '/training'
                   ? theme.colorScheme.primary
                   : theme.colorScheme.secondary,
             ),
-            tooltip: 'Performance',
-            onTap: () => context.go('/performance'),
+            tooltip: 'Personalize',
+            onTap: () => context.go('/training'),
           ),
 
           const Spacer(),
-
-          // More / overflow
-          _buildRailIcon(
-            context,
-            child: Icon(
-              Icons.more_horiz,
-              size: 22,
-              color: theme.colorScheme.secondary,
-            ),
-            tooltip: 'More',
-            onTap: () {},
-          ),
-
-          const SizedBox(height: 8),
 
           // Settings
           _buildRailIcon(
@@ -362,7 +375,7 @@ class _AppShellState extends State<AppShell> {
     const groupOrder = ['Pinned', 'Today', 'Yesterday', 'This Week', 'Older'];
 
     return Container(
-      width: 260,
+      width: 220,
       decoration: BoxDecoration(
         color: theme.scaffoldBackgroundColor,
         border: Border(
@@ -555,8 +568,9 @@ class _AppShellState extends State<AppShell> {
     int currentIndex = 0;
     if (currentPath.startsWith('/chat')) currentIndex = 0;
     if (currentPath == '/documents') currentIndex = 1;
-    if (currentPath == '/models') currentIndex = 2;
-    if (currentPath == '/settings') currentIndex = 3;
+    if (currentPath == '/training') currentIndex = 2;
+    if (currentPath == '/models') currentIndex = 3;
+    if (currentPath == '/settings') currentIndex = 4;
 
     return NavigationBar(
       selectedIndex: currentIndex,
@@ -567,8 +581,10 @@ class _AppShellState extends State<AppShell> {
           case 1:
             context.go('/documents');
           case 2:
-            context.go('/models');
+            context.go('/training');
           case 3:
+            context.go('/models');
+          case 4:
             context.go('/settings');
         }
       },
@@ -582,6 +598,11 @@ class _AppShellState extends State<AppShell> {
           icon: Icon(Icons.description_outlined),
           selectedIcon: Icon(Icons.description),
           label: 'Docs',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.auto_awesome_outlined),
+          selectedIcon: Icon(Icons.auto_awesome),
+          label: 'Personalize',
         ),
         NavigationDestination(
           icon: Icon(Icons.explore_outlined),

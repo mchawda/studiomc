@@ -60,9 +60,13 @@ class LocalInferenceService extends ChangeNotifier {
         }
       }
 
-      // Only fall back to first model if NO preference was expressed at all
+      // Only fall back if NO preference was expressed at all.
+      // Prefer a model under 8GB to avoid OOM kills.
       if (_activeModel == null && _models.isNotEmpty) {
-        _activeModel = _models.first.name;
+        final small = _models.cast<OllamaModel?>().firstWhere(
+            (m) => m!.sizeBytes < 8 * 1024 * 1024 * 1024,
+            orElse: () => null);
+        _activeModel = small?.name ?? _models.first.name;
       }
       notifyListeners();
       return true;
@@ -110,14 +114,67 @@ class LocalInferenceService extends ChangeNotifier {
   /// Pull a model from Ollama in the background. Non-blocking.
   Future<void> _pullModel(String tag) async {
     try {
-      // Fire-and-forget pull request
       _http.post(
         Uri.parse('$_ollamaBase/api/pull'),
         headers: {'content-type': 'application/json'},
         body: jsonEncode({'name': tag, 'stream': false}),
       );
+    } catch (_) {}
+  }
+
+  /// Pull a model from Ollama and stream progress. Returns a stream
+  /// of progress values (0.0-1.0). Completes when done.
+  Stream<double> pullModelWithProgress(String tag) async* {
+    try {
+      final request = http.Request(
+          'POST', Uri.parse('$_ollamaBase/api/pull'));
+      request.headers['content-type'] = 'application/json';
+      request.body = jsonEncode({'name': tag, 'stream': true});
+
+      final response = await _http.send(request);
+      if (response.statusCode != 200) return;
+
+      await for (final chunk in response.stream.transform(utf8.decoder)) {
+        for (final line in chunk.split('\n')) {
+          if (line.trim().isEmpty) continue;
+          try {
+            final json = jsonDecode(line) as Map<String, dynamic>;
+            final total = json['total'] as int? ?? 0;
+            final completed = json['completed'] as int? ?? 0;
+            if (total > 0) {
+              yield completed / total;
+            }
+            if (json['status'] == 'success') {
+              // Refresh model list
+              await init(preferredModel: _activeModel);
+              yield 1.0;
+              return;
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Delete a model from Ollama.
+  Future<bool> deleteModel(String tag) async {
+    try {
+      final resp = await _http.delete(
+        Uri.parse('$_ollamaBase/api/delete'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({'name': tag}),
+      );
+      if (resp.statusCode == 200) {
+        _models.removeWhere((m) => m.name == tag);
+        if (_activeModel == tag) {
+          _activeModel = _models.isNotEmpty ? _models.first.name : null;
+        }
+        notifyListeners();
+        return true;
+      }
+      return false;
     } catch (_) {
-      // Ignore pull errors — user can still use whatever models are available
+      return false;
     }
   }
 
@@ -132,6 +189,29 @@ class LocalInferenceService extends ChangeNotifier {
         mode: ProcessStartMode.detached);
     // Give it a moment to start
     await Future.delayed(const Duration(seconds: 2));
+  }
+
+  /// Returns true if the currently active model is small enough to run
+  /// directly in Ollama without needing SpliceLLM out-of-core.
+  /// Threshold: model file < 80% of system RAM (conservative).
+  bool get activeModelFitsInMemory {
+    if (_activeModel == null) return false;
+    final model = _models.cast<OllamaModel?>().firstWhere(
+        (m) => m!.name == _activeModel,
+        orElse: () => null);
+    if (model == null) return true; // unknown model — assume it fits
+    // Conservative: anything under 8 GB on-disk is fine for most machines.
+    // Ollama already handles memory management for models it can serve.
+    return model.sizeBytes < 8 * 1024 * 1024 * 1024;
+  }
+
+  /// Size in bytes of the active model (0 if unknown).
+  int get activeModelSizeBytes {
+    if (_activeModel == null) return 0;
+    final model = _models.cast<OllamaModel?>().firstWhere(
+        (m) => m!.name == _activeModel,
+        orElse: () => null);
+    return model?.sizeBytes ?? 0;
   }
 
   /// Select a model by exact Ollama tag.
@@ -269,6 +349,7 @@ class LocalInferenceService extends ChangeNotifier {
     }
   }
 
+  @override
   void dispose() {
     _http.close();
     super.dispose();

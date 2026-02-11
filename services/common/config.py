@@ -44,6 +44,7 @@ CLARA_PORT = 8103
 LRE_PORT = 8104
 ORCHESTRATOR_PORT = 8105
 SUPERVISOR_PORT = 8110
+TRAINING_PORT = 8106
 
 ALL_PORTS = {
     "inference": INFERENCE_PORT,
@@ -52,11 +53,14 @@ ALL_PORTS = {
     "clara": CLARA_PORT,
     "lre": LRE_PORT,
     "orchestrator": ORCHESTRATOR_PORT,
+    "training": TRAINING_PORT,
     "supervisor": SUPERVISOR_PORT,
 }
 
 
+ADAPTERS_DIR = ROOT / "adapters"
+
 def ensure_dirs() -> None:
     """Create all required directories on first launch."""
-    for d in (DB_DIR, MODELS_DIR, DOCS_DIR, INDEXES_DIR, LOGS_DIR, CACHE_DIR, DOWNLOADS_DIR):
+    for d in (DB_DIR, MODELS_DIR, DOCS_DIR, INDEXES_DIR, LOGS_DIR, CACHE_DIR, DOWNLOADS_DIR, ADAPTERS_DIR):
         d.mkdir(parents=True, exist_ok=True)

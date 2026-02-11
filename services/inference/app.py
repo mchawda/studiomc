@@ -3,7 +3,7 @@
 Wraps the Inference Router for multi-backend model inference with:
     - OpenAI-compatible REST API (streaming + non-streaming)
     - WebSocket streaming for Flutter UI
-    - Backend discovery (Ollama, LM Studio, Studiomc, Frontier APIs)
+    - Backend discovery (Ollama, LM Studio, SpliceLLM, Frontier APIs)
     - Model management (list, select, route)
     - Performance metrics (tok/s, TTFT)
 
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     # Wire the router into the routes module
     set_router(inference_router)
 
-    logger.info("Inference Service starting (engine: Studiomc out-of-core)")
+    logger.info("Inference Service starting (engine: SpliceLLM)")
 
     # Auto-probe backends on startup
     logger.info("Probing backends...")
@@ -85,7 +85,7 @@ app = FastAPI(
     title="Studiomc Inference Service",
     description=(
         "Multi-backend LLM inference router with OpenAI-compatible APIs. "
-        "Auto-detects Ollama, LM Studio, and built-in Studiomc out-of-core engine."
+        "Auto-detects Ollama, LM Studio, and built-in SpliceLLM engine."
     ),
     version="0.3.0",
     lifespan=lifespan,

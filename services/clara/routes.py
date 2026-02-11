@@ -5,6 +5,8 @@ Endpoints:
   GET  /clara/ingest/status/{job_id} — Check ingestion progress
   POST /clara/query          — Query → top-k latent vectors + optional snippets
   POST /clara/answer         — Query + vectors → answer + citations + groundedness
+  POST /clara/train          — Start compression training on a collection
+  GET  /clara/train/{run_id}/status — Check training status
   GET  /health               — Health check
 """
 
@@ -29,7 +31,11 @@ from common.schemas import (
     ClaraIngestStatus,
     ClaraQueryRequest,
     ClaraQueryResult,
+    ClaraTrainRequest,
+    ClaraTrainStatus,
     DocChunk,
+    GroundednessRequest,
+    GroundednessResponse,
 )
 
 from clara.compressor import (
@@ -45,9 +51,10 @@ logger = logging.getLogger("clara.routes")
 
 router = APIRouter()
 
-# ── In-memory job tracker ────────────────────────────────────────
+# ── In-memory job trackers ───────────────────────────────────────
 
 _jobs: dict[str, ClaraIngestStatus] = {}
+_train_jobs: dict[str, ClaraTrainStatus] = {}
 
 
 # ── Health check ─────────────────────────────────────────────────
@@ -217,3 +224,222 @@ async def answer(req: ClaraAnswerRequest) -> ClaraAnswerResponse:
     except Exception as exc:
         logger.exception("answer generation failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Compression Training ──────────────────────────────────────────
+
+
+@router.post("/clara/train", response_model=ClaraTrainStatus)
+async def train(req: ClaraTrainRequest, background_tasks: BackgroundTasks) -> ClaraTrainStatus:
+    """Start compression training on a CLaRa collection."""
+    run_id = str(uuid.uuid4())
+    status = ClaraTrainStatus(
+        run_id=run_id,
+        status="pending",
+        progress=0.0,
+        total_epochs=req.config.epochs,
+    )
+    _train_jobs[run_id] = status
+    background_tasks.add_task(
+        _run_clara_training,
+        run_id,
+        req.collection_id,
+        req.config.model_dump(),
+        req.incremental,
+    )
+    return status
+
+
+@router.get("/clara/train/{run_id}/status", response_model=ClaraTrainStatus)
+async def train_status(run_id: str) -> ClaraTrainStatus:
+    """Check status of a CLaRa compression training run."""
+    status = _train_jobs.get(run_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"Training run {run_id} not found")
+    return status
+
+
+async def _run_clara_training(
+    run_id: str,
+    collection_id: str,
+    config: dict,
+    incremental: bool,
+) -> None:
+    """Background task: run CLaRa compression training."""
+    from clara.trainer import get_trainer
+
+    status = _train_jobs[run_id]
+    status.status = "preparing"
+
+    try:
+        db = await Database.instance()
+
+        # Gather document chunks from the collection
+        rows = await db.fetchall(
+            """
+            SELECT dc.document_id, dc.text
+            FROM doc_chunks dc
+            JOIN collection_documents cd ON cd.document_id = dc.document_id
+            WHERE cd.collection_id = ?
+            ORDER BY dc.document_id, dc.chunk_index
+            """,
+            (collection_id,),
+        )
+
+        if not rows:
+            status.status = "error"
+            status.error = f"No documents found in collection '{collection_id}'"
+            return
+
+        # Group chunks by document
+        doc_chunks: dict[str, list[str]] = {}
+        for r in rows:
+            doc_id = r["document_id"]
+            if doc_id not in doc_chunks:
+                doc_chunks[doc_id] = []
+            doc_chunks[doc_id].append(r["text"])
+
+        documents = [
+            {"doc_id": doc_id, "chunks": chunks}
+            for doc_id, chunks in doc_chunks.items()
+        ]
+
+        def _progress(pct: float, msg: str) -> None:
+            status.progress = pct
+            status.status = "training" if pct > 0.10 else "preparing"
+            if pct > 0.85:
+                status.status = "evaluating"
+
+        # Run training
+        trainer = get_trainer()
+        result = await trainer.train_compressor(
+            documents=documents,
+            config=config,
+            progress_callback=_progress,
+        )
+
+        if not result.success:
+            status.status = "error"
+            status.error = result.error
+            return
+
+        # Evaluate on the same collection (quick sanity check)
+        eval_result = await trainer.evaluate(documents)
+
+        status.status = "complete"
+        status.progress = 1.0
+        status.current_epoch = result.epochs_completed
+        status.metrics = {
+            **result.metrics,
+            "evaluation": eval_result,
+            "num_documents": result.num_documents,
+            "num_chunks": result.num_chunks,
+            "num_training_pairs": result.num_training_pairs,
+            "model_path": result.model_path,
+        }
+
+        if result.final_loss is not None:
+            status.metrics["final_loss"] = result.final_loss
+
+        logger.info(
+            "CLaRa training run=%s complete: %d docs, %d chunks, %d pairs",
+            run_id,
+            result.num_documents,
+            result.num_chunks,
+            result.num_training_pairs,
+        )
+
+    except Exception as exc:
+        logger.exception("CLaRa training run=%s failed", run_id)
+        status.status = "error"
+        status.error = str(exc)
+
+
+# ── Groundedness ─────────────────────────────────────────────────
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences/claims using simple punctuation rules."""
+    import re
+
+    # Split on sentence-ending punctuation followed by whitespace or end
+    raw = re.split(r'(?<=[.!?])\s+', text.strip())
+    # Filter out very short fragments (less than 4 words)
+    return [s.strip() for s in raw if len(s.strip().split()) >= 4]
+
+
+def _keyword_overlap_score(sentence: str, snippet: str) -> float:
+    """Compute a simple keyword overlap score between a sentence and a snippet.
+
+    Returns 0.0 – 1.0 representing the fraction of meaningful words in the
+    sentence that appear somewhere in the snippet.
+    """
+    # Cheap stop-word set — skip very common English words
+    _STOP = frozenset(
+        "a an the is are was were be been being have has had do does did "
+        "will would shall should may might can could to of in for on with "
+        "at by from as into through during before after above below between "
+        "out off over under again further then once and but or nor not so "
+        "yet both either neither each every all any few more most other some "
+        "such no only own same than too very it its this that these those "
+        "i me my we our you your he him his she her they them their what "
+        "which who whom how if when where why".split()
+    )
+
+    sentence_words = set(sentence.lower().split()) - _STOP
+    if not sentence_words:
+        return 0.0
+
+    snippet_lower = snippet.lower()
+    matched = sum(1 for w in sentence_words if w in snippet_lower)
+    return matched / len(sentence_words)
+
+
+_SUPPORT_THRESHOLD = 0.35  # fraction of keywords that must match a snippet
+
+
+@router.post("/clara/groundedness", response_model=GroundednessResponse)
+async def groundedness(req: GroundednessRequest) -> GroundednessResponse:
+    """Evaluate how well an answer is grounded in source snippets.
+
+    Splits the answer into sentences, checks each against every snippet
+    using keyword overlap scoring, and returns the overall groundedness.
+    """
+    sentences = _split_sentences(req.answer)
+
+    if not sentences:
+        return GroundednessResponse(
+            score=0.0, supported_count=0, total_count=0, unsupported=[]
+        )
+
+    if not req.snippets:
+        return GroundednessResponse(
+            score=0.0,
+            supported_count=0,
+            total_count=len(sentences),
+            unsupported=sentences,
+        )
+
+    supported: list[str] = []
+    unsupported: list[str] = []
+
+    for sentence in sentences:
+        best_score = max(
+            _keyword_overlap_score(sentence, snippet)
+            for snippet in req.snippets
+        )
+        if best_score >= _SUPPORT_THRESHOLD:
+            supported.append(sentence)
+        else:
+            unsupported.append(sentence)
+
+    total = len(sentences)
+    supported_count = len(supported)
+    score = supported_count / total if total > 0 else 0.0
+
+    return GroundednessResponse(
+        score=round(score, 4),
+        supported_count=supported_count,
+        total_count=total,
+        unsupported=unsupported,
+    )

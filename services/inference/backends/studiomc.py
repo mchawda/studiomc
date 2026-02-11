@@ -1,6 +1,6 @@
-"""Studiomc backend client — wraps the built-in InferenceEngine.
+"""Studiomc backend client — wraps the built-in SpliceLLM InferenceEngine.
 
-Studiomc's own out-of-core inference engine that can run large models by
+SpliceLLM runs large models by
 streaming layers from disk. Unlike the other backends, this one is always
 available (built-in). Models must be loaded explicitly via the model
 manager before inference.
@@ -25,7 +25,7 @@ logger = logging.getLogger("inference.backends.studiomc")
 
 
 class StudiomcClient(BackendClient):
-    """Wraps the built-in Studiomc out-of-core InferenceEngine.
+    """Wraps the built-in SpliceLLM InferenceEngine.
 
     This backend is always "online" because it's compiled into the app.
     The model list only contains the currently loaded model (if any),
@@ -46,7 +46,7 @@ class StudiomcClient(BackendClient):
     # ── Discovery ─────────────────────────────────────────────────────
 
     async def probe(self) -> BackendInfo:
-        """Studiomc engine is always online (built-in)."""
+        """SpliceLLM engine is always online (built-in)."""
         models: list[dict[str, Any]] = []
         if self._engine.is_loaded and self._engine.active_model_id:
             models.append({"id": self._engine.active_model_id})
@@ -61,7 +61,7 @@ class StudiomcClient(BackendClient):
     async def list_models(self) -> list[UnifiedModel]:
         """Return the currently loaded model (if any).
 
-        The Studiomc engine doesn't have a discoverable model catalog —
+        SpliceLLM doesn't have a discoverable model catalog —
         models must be loaded via the model manager. We expose whatever
         is currently loaded so it appears in the unified model list.
         """
@@ -83,7 +83,7 @@ class StudiomcClient(BackendClient):
         messages: list[dict[str, str]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
-        """Stream tokens from the Studiomc engine.
+        """Stream tokens from the SpliceLLM engine.
 
         Passes through profile, temperature, max_tokens, and slowmode
         to the underlying InferenceEngine.generate_stream().
@@ -108,7 +108,7 @@ class StudiomcClient(BackendClient):
         messages: list[dict[str, str]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
-        """Non-streaming generation via the Studiomc engine."""
+        """Non-streaming generation via SpliceLLM."""
         profile = kwargs.get("profile", "balanced")
         temperature = kwargs.get("temperature")
         max_tokens = kwargs.get("max_tokens")
@@ -123,7 +123,7 @@ class StudiomcClient(BackendClient):
     # ── Model lifecycle ───────────────────────────────────────────────
 
     async def load_model(self, model_id: str, model_path: str) -> None:
-        """Load a model into the Studiomc engine."""
+        """Load a model into SpliceLLM."""
         await self._engine.load_model(model_id, model_path)
 
     # ── Lifecycle ─────────────────────────────────────────────────────

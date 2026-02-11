@@ -11,7 +11,9 @@ Uses the standard OpenAI chat completions protocol:
     - GET  /v1/models            — list available models
     - POST /v1/chat/completions  — chat completion (SSE streaming)
 
-Cloud requests require explicit user consent (consent flag checked by the router).
+Cloud requests require explicit user consent.  Before any generation
+call, the ``cloud_consent`` flag is checked.  If consent has not been
+granted, a ``CloudConsentRequired`` error is raised.
 """
 
 from __future__ import annotations
@@ -39,6 +41,71 @@ from inference.backends import (
 )
 
 logger = logging.getLogger("inference.backends.frontier")
+
+
+# ── Cloud consent management ──────────────────────────────────────────
+
+class CloudConsentRequired(PermissionError):
+    """Raised when a cloud API call is attempted without user consent."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Cloud AI requests require explicit user consent. "
+            "Enable 'Allow cloud AI requests' in Settings \u2192 Privacy "
+            "to send data to external APIs. Your data will leave this device."
+        )
+
+
+# Module-level consent flag — shared across all FrontierClient instances.
+_cloud_consent_granted: bool = False
+
+
+def set_cloud_consent(granted: bool) -> None:
+    """Set the global cloud consent flag (called from settings / API)."""
+    global _cloud_consent_granted
+    _cloud_consent_granted = granted
+    logger.info("Cloud consent %s", "granted" if granted else "revoked")
+
+
+def get_cloud_consent() -> bool:
+    """Return whether cloud consent has been granted."""
+    return _cloud_consent_granted
+
+
+async def load_cloud_consent_from_db() -> bool:
+    """Load the cloud consent flag from the settings table in the database.
+
+    Returns the consent state (also updates the module-level flag).
+    """
+    global _cloud_consent_granted
+    try:
+        from common.database import Database
+        db = await Database.instance()
+        row = await db.fetchone(
+            "SELECT value FROM settings WHERE key = ?", ("cloud_consent",)
+        )
+        if row is not None:
+            _cloud_consent_granted = row["value"] == "true"
+        else:
+            _cloud_consent_granted = False
+    except Exception:
+        _cloud_consent_granted = False
+    return _cloud_consent_granted
+
+
+async def save_cloud_consent_to_db(granted: bool) -> None:
+    """Persist the cloud consent flag to the database and update module state."""
+    set_cloud_consent(granted)
+    try:
+        from common.database import Database
+        db = await Database.instance()
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("cloud_consent", "true" if granted else "false"),
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("Failed to persist cloud consent to DB")
 
 
 class FrontierClient(BackendClient):
@@ -137,6 +204,13 @@ class FrontierClient(BackendClient):
             ))
         return models
 
+    # ── Consent guard ─────────────────────────────────────────────────
+
+    def _check_consent(self) -> None:
+        """Raise ``CloudConsentRequired`` if the user has not opted in."""
+        if not _cloud_consent_granted:
+            raise CloudConsentRequired()
+
     # ── Generation ────────────────────────────────────────────────────
 
     async def generate_stream(
@@ -148,7 +222,10 @@ class FrontierClient(BackendClient):
         """Stream tokens from POST /v1/chat/completions (SSE).
 
         Yields (token, None) for each token, then ("", metrics) at the end.
+        Raises ``CloudConsentRequired`` if the user has not granted consent.
         """
+        self._check_consent()
+
         payload: dict[str, Any] = {
             "model": model_id,
             "messages": messages,
@@ -228,7 +305,12 @@ class FrontierClient(BackendClient):
         messages: list[dict[str, str]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
-        """Non-streaming generation via streaming under the hood."""
+        """Non-streaming generation via streaming under the hood.
+
+        Raises ``CloudConsentRequired`` if the user has not granted consent.
+        """
+        self._check_consent()
+
         tokens: list[str] = []
         metrics = GenerationMetrics()
         async for token, m in self.generate_stream(model_id, messages, **kwargs):

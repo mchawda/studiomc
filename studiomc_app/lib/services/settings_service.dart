@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class SettingsService extends ChangeNotifier {
   static const _keyLocalOnly = 'settings_local_only';
   static const _keyShareAnonymousData = 'settings_share_anonymous_data';
+  static const _keyCloudConsent = 'settings_cloud_consent';
   static const _keySelectedTheme = 'settings_selected_theme';
   static const _keyDarkMode = 'settings_dark_mode';
   static const _keyLocalApiEnabled = 'settings_local_api_enabled';
@@ -21,6 +22,7 @@ class SettingsService extends ChangeNotifier {
   // Privacy
   bool _localOnly = true;
   bool _shareAnonymousData = false;
+  bool _cloudConsent = false;
 
   // Appearance
   String _selectedTheme = 'Light Blue';
@@ -40,6 +42,7 @@ class SettingsService extends ChangeNotifier {
   bool get hasActiveModel => _activeModelId != null && _activeModelId!.isNotEmpty;
   bool get localOnly => _localOnly;
   bool get shareAnonymousData => _shareAnonymousData;
+  bool get cloudConsent => _cloudConsent;
   String get selectedTheme => _selectedTheme;
   bool get darkMode => _darkMode;
   bool get localApiEnabled => _localApiEnabled;
@@ -56,6 +59,7 @@ class SettingsService extends ChangeNotifier {
 
     _localOnly = _prefs.getBool(_keyLocalOnly) ?? true;
     _shareAnonymousData = _prefs.getBool(_keyShareAnonymousData) ?? false;
+    _cloudConsent = _prefs.getBool(_keyCloudConsent) ?? false;
     _selectedTheme = _prefs.getString(_keySelectedTheme) ?? 'Light Blue';
     _darkMode = _prefs.getBool(_keyDarkMode) ?? false;
     _localApiEnabled = _prefs.getBool(_keyLocalApiEnabled) ?? true;
@@ -89,6 +93,12 @@ class SettingsService extends ChangeNotifier {
   set shareAnonymousData(bool value) {
     _shareAnonymousData = value;
     _prefs.setBool(_keyShareAnonymousData, value);
+    notifyListeners();
+  }
+
+  set cloudConsent(bool value) {
+    _cloudConsent = value;
+    _prefs.setBool(_keyCloudConsent, value);
     notifyListeners();
   }
 

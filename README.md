@@ -35,16 +35,28 @@ Studiomc is a desktop AI assistant that runs large language models entirely on y
 
 ## Features
 
+### Core
 - **One-click install** — Working chat in under 2 minutes
 - **Autopilot model selection** — Scans your hardware, picks the best model automatically
 - **Multi-backend** — Auto-detects Ollama and LM Studio, connects frontier APIs (OpenAI, Anthropic)
 - **Chat** — Streaming responses, conversation history, branching, memory
-- **Docs mode** — Upload PDF/TXT/MD, ask questions, get cited answers
-- **Investigate mode** — Deep-dive with full reasoning trace visibility
-- **Performance dashboard** — Speed rating (Fast/OK/Slow), throughput, system metrics
-- **Smart memory management** — Run bigger models on less hardware via out-of-core inference
 - **Local OpenAI-compatible API** — Integrate with any tool that speaks OpenAI
 - **Privacy-first** — Everything runs locally. No telemetry. No accounts. No cloud unless you explicitly opt in.
+
+### Document intelligence (RAG + CLaRa)
+- **Docs mode** — Upload PDF/TXT/MD, ask questions, get **cited answers** grounded in your documents
+- **CLaRa** — Compression-native retrieval: semantic embeddings (sentence-transformers or TF-IDF fallback), per-collection indexes, top-k retrieval with citations (p95 ≤150 ms)
+- **RAG pipeline** — Extract → chunk (500–1000 tokens, overlap) → index → retrieve → generate with source citations
+
+### Reasoning & orchestration
+- **Recursive reasoning loop** — Plan → tool → observe → answer; supports cited (CLaRa), fast, and investigate modes
+- **LRE (Local Reasoning Environment)** — Safe tool layer for the loop: search, grep, open, summarize, table_extract, cite; sandboxed with call budgets
+- **Investigate mode** — Full reasoning trace visibility: tool calls, retrieved chunks, and final answer in one view
+
+### Inference
+- **SpliceLLM** — Our built-in out-of-core engine: run models of any size by **streaming layers from disk** one at a time. Model splitter turns HuggingFace checkpoints into per-layer safetensors; only one layer in memory at a time. Prefetch overlaps I/O with compute. Enables large models on limited VRAM/RAM (e.g. 70B on 4GB with clear “slow mode” expectations)
+- **Multi-backend inference** — Bundled engine, Ollama, LM Studio, or frontier APIs; router picks the right backend per model
+- **Performance dashboard** — Speed rating (Fast/OK/Slow), throughput, system metrics
 
 ## Quick Start
 
@@ -86,18 +98,19 @@ Flutter App ── HTTP/WS ──▶ Local Supervisor
                               ├── Inference Router
                               │     ├── Ollama (auto-detected)
                               │     ├── LM Studio (auto-detected)
-                              │     ├── AirLLM Engine (built-in)
+                              │     ├── SpliceLLM (built-in, out-of-core)
                               │     └── Frontier APIs (optional)
                               ├── Model Manager
-                              ├── Document Service
-                              ├── CLaRa RAG Service
-                              └── Local Reasoning Environment
+                              ├── Document Service (extract, chunk, store)
+                              ├── CLaRa (compression-native retrieval + cited answer)
+                              ├── Orchestrator (recursive reasoning loop: plan → tool → answer)
+                              └── LRE (Local Reasoning Environment — tools for the loop)
 ```
 
 - **Frontend:** Flutter (Dart) — macOS, Windows, iOS, Android
-- **Inference:** Bundled llama.cpp engine (Metal GPU acceleration), with optional Ollama / LM Studio / frontier API backends
-- **Models:** Downloaded from HuggingFace on demand (GGUF format)
-- **Backend:** Python FastAPI — embedded runtime for advanced features (document search, reasoning)
+- **Inference:** SpliceLLM (layer streaming from disk), optional Ollama / LM Studio / frontier API
+- **Models:** HuggingFace GGUF or safetensors; splitter produces per-layer files for out-of-core
+- **Backend:** Python FastAPI — documents, CLaRa RAG, orchestrator, LRE
 - **Storage:** SQLite + filesystem
 
 ## Project Structure
@@ -106,21 +119,26 @@ Flutter App ── HTTP/WS ──▶ Local Supervisor
 studiomc/
   studiomc_app/           # Flutter app
     lib/
-      screens/            # Chat, Models, Documents, Settings, etc.
+      screens/            # Chat, Models, Documents, Settings, Training, etc.
       widgets/            # Reusable UI components
-      services/           # API clients, inference, settings
+      services/           # API clients, inference, orchestrator, settings
       models/             # Data models
   services/               # Python backend
     supervisor/           # Process manager
-    inference/            # AirLLM + inference routing
-    model_manager/        # Model downloads & registry
-    documents/            # Document extraction & indexing
-    clara/                # Compression-native retrieval
-    lre/                  # Local Reasoning Environment
-    orchestrator/         # Recursive reasoning loop
+    inference/            # Out-of-core engine, splitter, router (Ollama/LM Studio/frontier)
+    model_manager/       # Model downloads, registry, autopilot
+    documents/           # Document extraction, chunking, storage
+    clara/                # CLaRa — compression-native retrieval + cited answer
+    lre/                  # LRE — tools for orchestrator (search, grep, summarize, etc.)
+    orchestrator/         # Recursive reasoning loop (plan → tool → observe → answer)
+    training/             # Private training / personalization
   scripts/                # Build & release tooling
   product/                # Product specs & design docs
 ```
+
+## Development Status
+
+The project follows four release phases. **Phase 1** (core chat, models, docs, CLaRa, SpliceLLM) is mostly complete. **Phases 2–4** (orchestrator/LRE, Personalize wizard, investigate mode) are in progress. See `product/product-roadmap.md` for details.
 
 ## Performance Targets
 
@@ -138,7 +156,7 @@ Contributions welcome. Please open an issue first to discuss what you'd like to 
 ## Credits
 
 Built on the shoulders of:
-- [AirLLM](https://github.com/lyogavin/airllm) — Out-of-core inference
+- [AirLLM](https://github.com/lyogavin/airllm) — Inspired SpliceLLM’s out-of-core (layer-streaming) approach
 - [Ollama](https://ollama.com) — Local model runtime
 - [Flutter](https://flutter.dev) — Cross-platform UI
 

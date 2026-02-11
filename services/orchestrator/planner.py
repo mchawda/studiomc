@@ -229,9 +229,21 @@ async def _plan_investigate_llm(
 
     raw_steps = json.loads(content.strip())
 
+    # Ensure we have a list (wrap single object or reject invalid responses)
+    if isinstance(raw_steps, dict):
+        raw_steps = [raw_steps]
+    elif not isinstance(raw_steps, list):
+        raise ValueError(f"LLM returned invalid plan format: {type(raw_steps)}")
+
     steps: list[PlannedStep] = []
     for raw in raw_steps:
+        if not isinstance(raw, dict):
+            logger.warning("Skipping non-dict step in plan: %s", raw)
+            continue
         tool = raw.get("tool", "")
+        if not tool:
+            logger.warning("Skipping step with missing tool: %s", raw)
+            continue
         params = raw.get("params", {})
         # Inject collection_id where missing
         if tool in ("search",) and "scope" not in params:

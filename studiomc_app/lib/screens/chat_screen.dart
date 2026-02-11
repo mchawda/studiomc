@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/api_client.dart';
@@ -12,12 +10,14 @@ import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
+import 'package:studiomc_app/services/orchestrator_service.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 import 'package:studiomc_app/widgets/chat/branch_indicator.dart';
 import 'package:studiomc_app/widgets/chat/chat_input.dart';
 import 'package:studiomc_app/widgets/chat/context_panel.dart';
 import 'package:studiomc_app/widgets/chat/conversation_controls.dart';
 import 'package:studiomc_app/widgets/chat/empty_state.dart';
+import 'package:studiomc_app/widgets/chat/groundedness_meter.dart';
 import 'package:studiomc_app/widgets/chat/memory_toggle.dart';
 import 'package:studiomc_app/widgets/chat/message_bubble.dart';
 
@@ -33,10 +33,34 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   // ── State ──
   ChatMode _chatMode = ChatMode.chat;
+  PresetMode _selectedPreset = PresetMode.defaultMode;
   bool? _showContextPanel; // null = auto-decide based on model state
   bool _isStreaming = false;
   bool _isLoading = true;
   String? _error;
+
+  // ── Preset system prompts ──
+  static const _presetSystemPrompts = <PresetMode, String>{
+    PresetMode.defaultMode:
+        'You are a helpful, friendly AI assistant. Provide clear, accurate, '
+        'and concise responses. Be direct and informative.',
+    PresetMode.writing:
+        'You are a creative writing assistant. Focus on prose quality, voice, '
+        'tone, and narrative structure. Offer constructive feedback on writing. '
+        'When generating text, use vivid language and engaging prose. Help with '
+        'brainstorming, editing, and refining written work.',
+    PresetMode.coding:
+        'You are a precise coding assistant. Provide clear code examples in '
+        'properly formatted code blocks. Explain technical concepts accurately. '
+        'Focus on best practices, clean code, and performance. When debugging, '
+        'be systematic and thorough. Prefer concise, working code over verbose '
+        'explanations.',
+    PresetMode.tutor:
+        'You are a Socratic tutor. Guide learning through thoughtful questions '
+        'rather than giving direct answers. Help the learner discover concepts '
+        'on their own. Ask probing questions, provide hints when needed, and '
+        'encourage critical thinking. Celebrate progress and build confidence.',
+  };
 
   final ScrollController _scrollController = ScrollController();
   StreamSubscription<String>? _streamSub;
@@ -55,6 +79,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── Memory toggle state ──
   bool _memoryEnabled = true;
+
+  // ── Attached document IDs for this chat ──
+  final List<String> _attachedDocIds = [];
 
   // ── Branching state ──
   // Maps a parent message ID to the currently selected child index
@@ -92,6 +119,26 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mounted) setState(() => _memoryEnabled = enabled);
   }
 
+  Future<void> _loadPreset(DatabaseService db) async {
+    if (_chatId.isEmpty) return;
+    final value = await db.getSetting('chat_preset_$_chatId');
+    if (value != null && mounted) {
+      final preset = PresetMode.values.where((p) => p.name == value).firstOrNull;
+      if (preset != null) {
+        setState(() => _selectedPreset = preset);
+      }
+    }
+  }
+
+  void _handlePresetChanged(PresetMode preset) {
+    setState(() => _selectedPreset = preset);
+    // Persist per conversation (fire-and-forget)
+    if (_chatId.isNotEmpty) {
+      final db = context.read<DatabaseService>();
+      db.setSetting('chat_preset_$_chatId', preset.name);
+    }
+  }
+
   Future<void> _loadData() async {
     final db = context.read<DatabaseService>();
     final api = context.read<ApiClient>();
@@ -100,20 +147,21 @@ class _ChatScreenState extends State<ChatScreen> {
     final localInference = context.read<LocalInferenceService>();
 
     try {
-      // 1) Bundled engine (primary — zero dependencies)
-      if (bundledInference.available && bundledInference.activeModel != null) {
-        _modelName = bundledInference.humanName(
-            bundledInference.activeModelPath ?? '');
-      }
-
-      // 2) Ollama fallback
-      if (_modelName.isEmpty && localInference.available) {
+      // 1) Ollama (primary for small models)
+      if (localInference.available) {
         if (settings.hasActiveModel) {
           localInference.selectModelByPreference(settings.activeModelId!);
         }
         if (localInference.activeModel != null) {
           _modelName = localInference.humanName(localInference.activeModel!);
         }
+      }
+
+      // 2) SpliceLLM (for large models)
+      if (_modelName.isEmpty &&
+          bundledInference.available &&
+          bundledInference.activeModel != null) {
+        _modelName = bundledInference.activeModel!;
       }
 
       // 3) Backend inference service fallback
@@ -151,6 +199,9 @@ class _ChatScreenState extends State<ChatScreen> {
         } else {
           await _loadMessagesFromDb(db);
         }
+
+        // Load persisted preset for this conversation
+        await _loadPreset(db);
       }
 
       setState(() => _isLoading = false);
@@ -408,6 +459,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'created_at': DateTime.now().toIso8601String(),
         'updated_at': DateTime.now().toIso8601String(),
       });
+      // Persist initial preset for this conversation
+      await db.setSetting('chat_preset_$_chatId', _selectedPreset.name);
     }
 
     // Determine parent message ID for branching
@@ -440,10 +493,10 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    // Check inference is available (bundled engine or Ollama)
-    final useBundled = bundledInference.available;
-    final useOllama = !useBundled && localInference.available;
-    if (!useBundled && !useOllama) {
+    // Routing: prefer Ollama for small models, SpliceLLM for large
+    final useOllama = localInference.available;
+    final useStudiomc = bundledInference.available;
+    if (!useOllama && !useStudiomc) {
       setState(() {
         _error = 'No inference engine available. Download a model first.';
       });
@@ -468,23 +521,176 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      final messagesPayload = _messages
+      // Route based on chat mode: docs/investigate → orchestrator, chat → streaming inference
+      if (_chatMode == ChatMode.docs || _chatMode == ChatMode.investigate) {
+        await _sendViaOrchestrator(text, assistantMsgId, userMsgId, db);
+        return;
+      }
+
+      // Build messages payload with preset system prompt, memory, and context
+      final messagesPayload = <Map<String, String>>[];
+
+      // Inject preset system prompt
+      final systemPrompt = _presetSystemPrompts[_selectedPreset];
+      if (systemPrompt != null && systemPrompt.isNotEmpty) {
+        messagesPayload.add({
+          'role': 'system',
+          'content': systemPrompt,
+        });
+      }
+
+      if (_memoryEnabled) {
+        // Inject global facts and chat summary as system context
+        try {
+          await db.ensureMemoryTables();
+          final facts = await db.getGlobalFacts(limit: 10);
+          final chatSummary =
+              _chatId.isNotEmpty ? await db.getChatSummary(_chatId) : null;
+
+          final memoryParts = <String>[];
+          if (facts.isNotEmpty) {
+            memoryParts.add('User facts: ${facts.join('. ')}');
+          }
+          if (chatSummary != null) {
+            memoryParts.add('Previous context: $chatSummary');
+          }
+          if (memoryParts.isNotEmpty) {
+            messagesPayload.add({
+              'role': 'system',
+              'content':
+                  'You have memory enabled. Here is context from previous interactions:\n${memoryParts.join('\n')}',
+            });
+          }
+        } catch (_) {}
+      }
+
+      // Inject document context if any documents are attached
+      if (_attachedDocIds.isNotEmpty) {
+        try {
+          final docParts = <String>[];
+          for (final docId in _attachedDocIds) {
+            final content = await db.getDocumentContent(docId);
+            if (content != null && content.isNotEmpty) {
+              // Truncate to ~2000 chars to fit context window
+              final truncated = content.length > 2000
+                  ? content.substring(0, 2000)
+                  : content;
+              docParts.add(truncated);
+            }
+          }
+          if (docParts.isNotEmpty) {
+            messagesPayload.add({
+              'role': 'system',
+              'content':
+                  'The user has uploaded documents. Use them to answer questions:\n\n${docParts.join('\n\n---\n\n')}',
+            });
+          }
+        } catch (_) {}
+      }
+
+      messagesPayload.addAll(_messages
           .where((m) => !m.isStreaming)
           .map((m) => {
                 'role': _roleToString(m.role),
                 'content': m.content,
               })
-          .toList();
+          .toList());
 
       final buffer = StringBuffer();
       int tokenCount = 0;
 
-      final tokenStream = useBundled
-          ? bundledInference.streamChat(messages: messagesPayload)
-          : localInference.streamChat(messages: messagesPayload);
+      // ── Routing: Ollama for models that fit in memory, SpliceLLM only
+      //    for models that exceed GPU/RAM capacity. ──
+      var usingStudiomcFallback = false;
+      int ollamaRetries = 0;
+      const maxOllamaRetries = 2;
+      final modelFits = localInference.activeModelFitsInMemory;
+
+      Stream<String> tokenStream;
+      if (useOllama) {
+        tokenStream = localInference.streamChat(messages: messagesPayload);
+      } else {
+        tokenStream = bundledInference.streamChat(messages: messagesPayload);
+        usingStudiomcFallback = true;
+      }
+
+      void retryOllama() {
+        ollamaRetries++;
+        debugPrint('[chat] Retrying Ollama (attempt $ollamaRetries/$maxOllamaRetries)…');
+        setState(() {
+          final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+          if (idx != -1) {
+            _messages[idx] = Message(
+              id: assistantMsgId,
+              chatId: _chatId,
+              role: MessageRole.assistant,
+              content: 'Model loading, please wait…',
+              createdAt: _messages[idx].createdAt,
+              isStreaming: true,
+              parentMessageId: userMsgId,
+            );
+          }
+        });
+        // Wait briefly for Ollama to finish loading the model
+        Future.delayed(const Duration(seconds: 3), () {
+          if (!mounted) return;
+          buffer.clear();
+          tokenCount = 0;
+          final retryStream = localInference.streamChat(messages: messagesPayload);
+          _streamSub = retryStream.listen(
+            (t) => _handleStreamToken(
+              t, buffer, assistantMsgId, userMsgId, () => tokenCount++,
+              useStudiomc: useStudiomc,
+              modelFits: modelFits,
+              ollamaRetries: ollamaRetries,
+              maxRetries: maxOllamaRetries,
+              retryFn: retryOllama,
+              fallbackFn: () => _fallbackToSpliceLLM(
+                messagesPayload, buffer, assistantMsgId, userMsgId, text, db,
+                () => tokenCount++, () => tokenCount,
+              ),
+            ),
+            onDone: () => _onStreamDone(
+              buffer, tokenCount, assistantMsgId, userMsgId, text, db,
+              localInference.tokPerS),
+            onError: (e) => _onStreamError(e, assistantMsgId),
+          );
+        });
+      }
+
+      void fallbackToSplice() {
+        _fallbackToSpliceLLM(
+          messagesPayload, buffer, assistantMsgId, userMsgId, text, db,
+          () => tokenCount++, () => tokenCount,
+        );
+      }
 
       _streamSub = tokenStream.listen(
         (token) {
+          // Detect Ollama error tokens
+          if (!usingStudiomcFallback && token.startsWith('[Error')) {
+            _streamSub?.cancel();
+            debugPrint('[chat] Ollama error: $token');
+
+            // If model fits in memory → retry Ollama (it's probably loading)
+            // If model is too large → fall back to SpliceLLM
+            if (modelFits) {
+              if (ollamaRetries < maxOllamaRetries) {
+                retryOllama();
+              } else {
+                // Exhausted retries — show error, don't use SpliceLLM for small models
+                debugPrint('[chat] Ollama retries exhausted for small model');
+                _onStreamError('Ollama is not responding. Check that it\'s running.', assistantMsgId);
+              }
+            } else if (useStudiomc) {
+              // Model too large for GPU → SpliceLLM is appropriate
+              fallbackToSplice();
+            } else {
+              _onStreamError('Model may be too large. No fallback available.', assistantMsgId);
+            }
+            return;
+          }
+
           buffer.write(token);
           tokenCount++;
           setState(() {
@@ -509,7 +715,9 @@ class _ChatScreenState extends State<ChatScreen> {
           final finalContent = buffer.toString();
 
           // Update tok/s from whichever engine was used
-          _tokPerS = useBundled ? bundledInference.tokPerS : localInference.tokPerS;
+          _tokPerS = usingStudiomcFallback
+              ? bundledInference.tokPerS
+              : localInference.tokPerS;
 
           // Save to DB
           await db.insertMessage({
@@ -526,6 +734,19 @@ class _ChatScreenState extends State<ChatScreen> {
           await db.updateChat(_chatId, {
             'updated_at': DateTime.now().toIso8601String(),
           });
+
+          // Save memory summary if enabled
+          if (_memoryEnabled && finalContent.isNotEmpty) {
+            try {
+              await db.ensureMemoryTables();
+              // Build a compact summary of the last exchange
+              final summaryText =
+                  'User asked: ${text.length > 200 ? text.substring(0, 200) : text}. '
+                  'Assistant replied: ${finalContent.length > 300 ? finalContent.substring(0, 300) : finalContent}';
+              await db.saveChatSummary(
+                  _chatId, summaryText, tokenCount);
+            } catch (_) {}
+          }
 
           setState(() {
             _isStreaming = false;
@@ -604,6 +825,288 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     _sendMessage(lastUserMsg.content);
+  }
+
+  /// Send message via orchestrator (for docs/investigate modes).
+  Future<void> _sendViaOrchestrator(
+    String text,
+    String assistantMsgId,
+    String userMsgId,
+    DatabaseService db,
+  ) async {
+    final orchestrator = context.read<OrchestratorService>();
+
+    // Map ChatMode to orchestrator mode
+    String orchestratorMode;
+    switch (_chatMode) {
+      case ChatMode.docs:
+        orchestratorMode = 'cited';
+        break;
+      case ChatMode.investigate:
+        orchestratorMode = 'investigate';
+        break;
+      default:
+        orchestratorMode = 'fast';
+    }
+
+    try {
+      // Show "thinking" status
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+        if (idx != -1) {
+          _messages[idx] = Message(
+            id: assistantMsgId,
+            chatId: _chatId,
+            role: MessageRole.assistant,
+            content: 'Planning and researching...',
+            createdAt: _messages[idx].createdAt,
+            isStreaming: true,
+            parentMessageId: userMsgId,
+          );
+        }
+      });
+
+      // Call orchestrator
+      final result = await orchestrator.runReasoning(
+        chatId: _chatId,
+        userQuery: text,
+        mode: orchestratorMode,
+        collectionId: _attachedDocIds.isNotEmpty ? 'default' : null,
+      );
+
+      final answer = result['answer'] as String? ?? '';
+      final citations = result['citations'] as List<dynamic>? ?? [];
+      final groundednessValue = (result['groundedness'] as num?)?.toDouble() ?? 0.0;
+      final trace = result['trace'] as List<dynamic>? ?? [];
+      final metrics = result['metrics'] as Map<String, dynamic>? ?? {};
+      final tokenCount = (answer.split(' ').length);
+
+      // Update citations, groundedness, and trace in state
+      setState(() {
+        _citations = citations
+            .map((c) => Citation(
+                  documentId: c['document_id'] ?? '',
+                  filename: c['filename'] ?? '',
+                  chunkIndex: c['chunk_index'] ?? 0,
+                  snippet: c['snippet'] ?? '',
+                  relevanceScore: (c['relevance_score'] ?? 0.0).toDouble(),
+                ))
+            .toList();
+
+        _groundedness = groundednessValue;
+
+        _traceSteps = trace
+            .map((t) => TraceStep(
+                  id: t['tool'] ?? '',
+                  type: t['tool'] ?? '',
+                  description: (t['input'] as Map<String, dynamic>?)?.toString() ?? '',
+                  result: t['output'] ?? '',
+                  durationMs: t['duration_ms'] ?? 0,
+                ))
+            .toList();
+      });
+
+      // Save to DB
+      await db.insertMessage({
+        'id': assistantMsgId,
+        'chat_id': _chatId,
+        'role': 'assistant',
+        'content': answer,
+        'tokens': tokenCount,
+        'created_at': DateTime.now().toIso8601String(),
+        'parent_message_id': userMsgId,
+      });
+
+      await db.updateChat(_chatId, {
+        'updated_at': DateTime.now().toIso8601String(),
+      });
+
+      // Update UI with final answer
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+        if (idx != -1) {
+          _messages[idx] = Message(
+            id: assistantMsgId,
+            chatId: _chatId,
+            role: MessageRole.assistant,
+            content: answer,
+            tokens: tokenCount,
+            createdAt: _messages[idx].createdAt,
+            isStreaming: false,
+            parentMessageId: userMsgId,
+          );
+        }
+        _isStreaming = false;
+      });
+
+      _scrollToBottom();
+    } catch (e) {
+      setState(() {
+        _error = 'Orchestrator failed: $e';
+        _isStreaming = false;
+      });
+    }
+  }
+
+  /// Helper: process a token in the fallback stream.
+  /// Handle a token from the stream, with error detection and smart routing.
+  void _handleStreamToken(
+    String token,
+    StringBuffer buffer,
+    String assistantMsgId,
+    String userMsgId,
+    VoidCallback incrementTokens, {
+    required bool useStudiomc,
+    required bool modelFits,
+    required int ollamaRetries,
+    required int maxRetries,
+    required VoidCallback retryFn,
+    required VoidCallback fallbackFn,
+  }) {
+    // Detect Ollama error tokens
+    if (token.startsWith('[Error')) {
+      _streamSub?.cancel();
+      debugPrint('[chat] Ollama error in retry: $token');
+      if (modelFits && ollamaRetries < maxRetries) {
+        retryFn();
+      } else if (!modelFits && useStudiomc) {
+        fallbackFn();
+      } else {
+        _onStreamError('Ollama error: $token', assistantMsgId);
+      }
+      return;
+    }
+    // Normal token — pass through
+    _onStreamToken(token, buffer, assistantMsgId, userMsgId, incrementTokens);
+  }
+
+  /// Fall back to SpliceLLM for models too large for GPU.
+  void _fallbackToSpliceLLM(
+    List<Map<String, String>> messagesPayload,
+    StringBuffer buffer,
+    String assistantMsgId,
+    String userMsgId,
+    String userText,
+    dynamic db,
+    VoidCallback incrementTokens,
+    int Function() getTokenCount,
+  ) {
+    final localInference = context.read<LocalInferenceService>();
+    final bundledInference = context.read<BundledInferenceService>();
+
+    buffer.clear();
+    debugPrint('[chat] Model too large for GPU → routing to SpliceLLM');
+
+    setState(() {
+      final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+      if (idx != -1) {
+        _messages[idx] = Message(
+          id: assistantMsgId,
+          chatId: _chatId,
+          role: MessageRole.assistant,
+          content: 'Model too large for GPU. Switching to SpliceLLM…',
+          createdAt: _messages[idx].createdAt,
+          isStreaming: true,
+          parentMessageId: userMsgId,
+        );
+      }
+    });
+
+    bundledInference.selectModel(localInference.activeModel ?? 'auto');
+    final fallbackStream = bundledInference.streamChat(messages: messagesPayload);
+    _streamSub = fallbackStream.listen(
+      (t) => _onStreamToken(t, buffer, assistantMsgId, userMsgId, incrementTokens),
+      onDone: () => _onStreamDone(
+        buffer, getTokenCount(), assistantMsgId, userMsgId, userText, db,
+        bundledInference.tokPerS),
+      onError: (e) => _onStreamError(e, assistantMsgId),
+    );
+  }
+
+  void _onStreamToken(String token, StringBuffer buffer, String assistantMsgId,
+      String userMsgId, VoidCallback incrementTokens) {
+    buffer.write(token);
+    incrementTokens();
+    final tokenCount = buffer.length; // approximate
+    setState(() {
+      final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+      if (idx != -1) {
+        _messages[idx] = Message(
+          id: assistantMsgId,
+          chatId: _chatId,
+          role: MessageRole.assistant,
+          content: buffer.toString(),
+          tokens: tokenCount,
+          createdAt: _messages[idx].createdAt,
+          isStreaming: true,
+          parentMessageId: userMsgId,
+        );
+      }
+    });
+    _scrollToBottom();
+  }
+
+  /// Helper: handle stream completion.
+  Future<void> _onStreamDone(
+      StringBuffer buffer,
+      int tokenCount,
+      String assistantMsgId,
+      String userMsgId,
+      String userText,
+      dynamic db,
+      double tokPerS) async {
+    final finalContent = buffer.toString();
+    _tokPerS = tokPerS;
+
+    // Save to DB
+    await db.insertMessage({
+      'id': assistantMsgId,
+      'chat_id': _chatId,
+      'role': 'assistant',
+      'content': finalContent,
+      'tokens': tokenCount,
+      'created_at': DateTime.now().toIso8601String(),
+      'parent_message_id': userMsgId,
+    });
+    await db.updateChat(_chatId, {
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+
+    setState(() {
+      final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+      if (idx != -1) {
+        _messages[idx] = Message(
+          id: assistantMsgId,
+          chatId: _chatId,
+          role: MessageRole.assistant,
+          content: finalContent,
+          tokens: tokenCount,
+          createdAt: _messages[idx].createdAt,
+          isStreaming: false,
+          parentMessageId: userMsgId,
+        );
+      }
+      _isStreaming = false;
+    });
+  }
+
+  /// Helper: handle stream error.
+  void _onStreamError(dynamic error, String assistantMsgId) {
+    setState(() {
+      _isStreaming = false;
+      _error = 'Error: $error';
+      final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
+      if (idx != -1) {
+        _messages[idx] = Message(
+          id: assistantMsgId,
+          chatId: _chatId,
+          role: MessageRole.assistant,
+          content: '[Error: $error]',
+          createdAt: _messages[idx].createdAt,
+          isStreaming: false,
+        );
+      }
+    });
   }
 
   void _scrollToBottom() {
@@ -701,6 +1204,16 @@ class _ChatScreenState extends State<ChatScreen> {
           memoryEnabled: _memoryEnabled,
           onMemoryToggled: _handleMemoryToggle,
           currentModelName: _modelName,
+          onModelChanged: (modelId) {
+            final localInference = context.read<LocalInferenceService>();
+            localInference.selectModel(modelId);
+            setState(() {
+              _modelName = localInference.humanName(modelId);
+            });
+          },
+          onDocumentUploaded: (docId) {
+            setState(() => _attachedDocIds.add(docId));
+          },
         ),
       ],
     );
@@ -873,6 +1386,16 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         ),
+        // Inline groundedness meter — shown when we have citations or after a response
+        if (_citations.isNotEmpty || _groundedness > 0)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: GroundednessMeter(
+              percentage: _groundedness,
+              sourceCount: _citations.length,
+              compact: true,
+            ),
+          ),
         Expanded(child: _buildMessageList(theme, visibleMessages)),
       ],
     );
@@ -925,6 +1448,16 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         ),
+        // Inline groundedness meter
+        if (_citations.isNotEmpty || _groundedness > 0)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: GroundednessMeter(
+              percentage: _groundedness,
+              sourceCount: _citations.length,
+              compact: true,
+            ),
+          ),
         Expanded(child: _buildMessageList(theme, visibleMessages)),
       ],
     );

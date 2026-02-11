@@ -3,6 +3,7 @@ import '../screens/onboarding_screen.dart';
 import '../screens/chat_screen.dart';
 import '../screens/models_screen.dart';
 import '../screens/documents_screen.dart';
+import '../screens/training_screen.dart';
 import '../screens/performance_screen.dart';
 import '../screens/settings_screen.dart';
 import '../widgets/shell/app_shell.dart';
@@ -34,6 +35,10 @@ final appRouter = GoRouter(
         GoRoute(
           path: '/documents',
           builder: (context, state) => const DocumentsScreen(),
+        ),
+        GoRoute(
+          path: '/training',
+          builder: (context, state) => const TrainingScreen(),
         ),
         GoRoute(
           path: '/performance',

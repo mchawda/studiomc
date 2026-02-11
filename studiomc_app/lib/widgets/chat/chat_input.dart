@@ -2,13 +2,13 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:studiomc_app/services/document_service.dart';
+import 'package:studiomc_app/models/app_models.dart';
+import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
-import 'package:studiomc_app/services/settings_service.dart';
+import 'package:studiomc_app/services/training_service.dart';
 import 'package:studiomc_app/widgets/chat/memory_toggle.dart';
 
 /// Perplexity-style floating input bar.
@@ -65,6 +65,9 @@ class _ChatInputState extends State<ChatInput> {
   String? _selectedModelName;
   bool _modelsLoading = false;
 
+  // ── Active adapter indicator ──
+  String? _activeAdapterName;
+
   @override
   void initState() {
     super.initState();
@@ -74,6 +77,7 @@ class _ChatInputState extends State<ChatInput> {
     });
     _selectedModelName = widget.currentModelName;
     _loadModels();
+    _checkActiveAdapter();
   }
 
   @override
@@ -168,6 +172,33 @@ class _ChatInputState extends State<ChatInput> {
     }
   }
 
+  // ── Check for active personalized adapter ──
+
+  Future<void> _checkActiveAdapter() async {
+    try {
+      final training = TrainingService();
+      final adapters = await training.getAdapters();
+
+      if (!mounted) return;
+
+      // Find the first active adapter
+      String? adapterName;
+      for (final a in adapters) {
+        final isActive = a['is_active'] == true || a['is_active'] == 1;
+        if (isActive) {
+          adapterName = a['name'] as String?;
+          break;
+        }
+      }
+
+      if (mounted && adapterName != _activeAdapterName) {
+        setState(() => _activeAdapterName = adapterName);
+      }
+    } catch (_) {
+      // Training service unavailable — no adapter indicator
+    }
+  }
+
   /// Turn GGUF filename into a friendly name.
   String _humanName(String filename) {
     var name = filename
@@ -239,18 +270,38 @@ class _ChatInputState extends State<ChatInput> {
     setState(() => entry.state = _FileUploadState.uploading);
 
     try {
-      final doc = await DocumentService().uploadDocument(entry.file.path!);
+      final db = context.read<DatabaseService>();
+      final file = File(entry.file.path!);
+      final content = await file.readAsString();
+
+      final docId = 'doc-${DateTime.now().millisecondsSinceEpoch}';
+      final ext = entry.file.extension?.toLowerCase() ?? 'txt';
+      final mime = ext == 'pdf'
+          ? 'application/pdf'
+          : ext == 'md'
+              ? 'text/markdown'
+              : 'text/plain';
+
+      // Persist document metadata to SQLite
+      await db.insertDocument({
+        'id': docId,
+        'filename': entry.file.name,
+        'mime': mime,
+        'bytes': entry.file.size,
+        'sha256': '',
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      // Persist document text content
+      await db.saveDocumentContent(docId, content);
+
       if (!mounted) return;
 
-      if (doc != null) {
-        setState(() {
-          entry.state = _FileUploadState.done;
-          entry.documentId = doc.id;
-        });
-        widget.onDocumentUploaded?.call(doc.id);
-      } else {
-        setState(() => entry.state = _FileUploadState.error);
-      }
+      setState(() {
+        entry.state = _FileUploadState.done;
+        entry.documentId = docId;
+      });
+      widget.onDocumentUploaded?.call(docId);
     } catch (_) {
       if (mounted) setState(() => entry.state = _FileUploadState.error);
     }
@@ -340,6 +391,10 @@ class _ChatInputState extends State<ChatInput> {
                       ),
 
                       const Spacer(),
+
+                      // Personalized model indicator
+                      if (_activeAdapterName != null)
+                        _buildPersonalizedIndicator(theme),
 
                       // Model selector
                       _buildModelSelector(theme),
@@ -444,6 +499,51 @@ class _ChatInputState extends State<ChatInput> {
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Personalized model indicator ──
+
+  static const _kAdapterPurple = Color(0xFF8B5CF6);
+
+  Widget _buildPersonalizedIndicator(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Tooltip(
+        message: 'Using your personalized model',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+            color: _kAdapterPurple.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _kAdapterPurple.withValues(alpha: 0.2),
+              width: 0.5,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.auto_awesome_rounded,
+                  size: 10, color: _kAdapterPurple),
+              const SizedBox(width: 3),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 80),
+                child: Text(
+                  _activeAdapterName ?? 'Personalized',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w500,
+                    color: _kAdapterPurple,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

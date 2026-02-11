@@ -347,6 +347,58 @@ async def query_collection(collection_id: str, body: CollectionQueryRequest):
     }
 
 
+# ── Search ───────────────────────────────────────────────────────
+
+
+@router.get("/documents/search")
+async def search_documents(q: str, limit: int = 50):
+    """Search across all document content using SQL LIKE.
+
+    Searches both document filenames and chunk text.  Returns matching
+    documents with a snippet showing the first match.
+    """
+    if not q or not q.strip():
+        return {"query": q, "results": [], "total": 0}
+
+    db = await Database.instance()
+    search_term = f"%{q.strip()}%"
+
+    rows = await db.fetchall(
+        """SELECT dc.id AS chunk_id, dc.document_id, dc.chunk_index, dc.text,
+                  d.filename, d.created_at
+           FROM doc_chunks dc
+           JOIN documents d ON d.id = dc.document_id
+           WHERE dc.text LIKE ?
+           ORDER BY d.created_at DESC, dc.chunk_index ASC
+           LIMIT ?""",
+        (search_term, limit),
+    )
+
+    results = []
+    for row in rows:
+        content = row["text"] or ""
+        lower_content = content.lower()
+        match_pos = lower_content.find(q.strip().lower())
+        if match_pos >= 0:
+            start = max(0, match_pos - 40)
+            end = min(len(content), match_pos + len(q) + 60)
+            snippet = ("…" if start > 0 else "") + content[start:end] + ("…" if end < len(content) else "")
+        else:
+            snippet = content[:100] + ("…" if len(content) > 100 else "")
+
+        results.append({
+            "type": "document",
+            "id": row["document_id"],
+            "chunk_id": row["chunk_id"],
+            "chunk_index": row["chunk_index"],
+            "filename": row["filename"] or "untitled",
+            "snippet": snippet.strip(),
+            "timestamp": row["created_at"] or "",
+        })
+
+    return {"query": q, "results": results, "total": len(results)}
+
+
 # ── Health ───────────────────────────────────────────────────────
 
 

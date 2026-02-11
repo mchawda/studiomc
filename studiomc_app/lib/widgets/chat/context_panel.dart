@@ -17,6 +17,9 @@ class ContextPanel extends StatelessWidget {
   final double tokPerS;
   final List<Citation> citations;
   final double groundedness;
+  final int groundednessSupportedCount;
+  final int groundednessTotalCount;
+  final List<String> groundednessUnsupported;
   final List<TraceStep> traceSteps;
   final VoidCallback? onModelSelected;
 
@@ -28,6 +31,9 @@ class ContextPanel extends StatelessWidget {
     required this.tokPerS,
     this.citations = const [],
     this.groundedness = 0.0,
+    this.groundednessSupportedCount = 0,
+    this.groundednessTotalCount = 0,
+    this.groundednessUnsupported = const [],
     this.traceSteps = const [],
     this.onModelSelected,
   });
@@ -243,6 +249,9 @@ class ContextPanel extends StatelessWidget {
         GroundednessMeter(
           percentage: groundedness,
           sourceCount: citations.length,
+          supportedCount: groundednessSupportedCount,
+          totalCount: groundednessTotalCount,
+          unsupportedClaims: groundednessUnsupported,
         ),
         const SizedBox(height: 10),
         _SectionLabel(label: 'Citations (${citations.length})'),
@@ -321,6 +330,9 @@ class ContextPanel extends StatelessWidget {
         GroundednessMeter(
           percentage: groundedness,
           sourceCount: citations.length,
+          supportedCount: groundednessSupportedCount,
+          totalCount: groundednessTotalCount,
+          unsupportedClaims: groundednessUnsupported,
           compact: true,
         ),
         const SizedBox(height: 10),
@@ -965,13 +977,30 @@ class _OllamaModelListState extends State<_OllamaModelList> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final activeTag = context.watch<LocalInferenceService>().activeModel;
+    final localInference = context.watch<LocalInferenceService>();
+    final activeTag = localInference.activeModel;
+
+    // Build combined list: installed models first, then catalog (not installed)
+    final catalogTags = _catalog.map((c) => c.tag.split(':').first).toSet();
+    final installedExtra = localInference.models
+        .where((m) => !catalogTags.contains(m.name.split(':').first))
+        .map((m) => _CatalogModel(
+              m.name,
+              localInference.humanName(m.name),
+              m.family.isNotEmpty ? m.family : '—',
+              m.parameterSize,
+              '${(m.sizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB',
+            ))
+        .toList();
+
+    final allModels = [...installedExtra, ..._catalog];
 
     return Column(
-      children: _catalog.map((m) {
+      children: allModels.map((m) {
         final installed = _isInstalled(m.tag);
         final isActive = activeTag == m.tag ||
-            activeTag == '${m.tag.split(':').first}:latest';
+            activeTag == '${m.tag.split(':').first}:latest' ||
+            m.tag == '${activeTag?.split(':').first}';
         final isPulling = _pullingTag == m.tag;
 
         return Padding(

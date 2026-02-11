@@ -6,6 +6,7 @@ import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/document_service.dart';
+import 'package:studiomc_app/services/process_launcher.dart';
 import 'package:studiomc_app/widgets/documents/document_card.dart';
 import 'package:studiomc_app/widgets/documents/collection_card.dart';
 import 'package:studiomc_app/widgets/documents/upload_area.dart';
@@ -40,6 +41,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
 
     final db = context.read<DatabaseService>();
     final api = context.read<ApiClient>();
+
+    // Ensure backend is running and refresh supervisor availability
+    await ProcessLauncher.launchBackend();
+    await api.checkAvailable();
 
     try {
       if (api.isAvailable) {

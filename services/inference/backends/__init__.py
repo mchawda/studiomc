@@ -3,7 +3,7 @@
 Provides a unified interface for multiple LLM inference backends:
     - Ollama       (local, REST API at localhost:11434)
     - LM Studio    (local, OpenAI-compatible at localhost:1234)
-    - Studiomc     (built-in, Studiomc's own out-of-core engine)
+    - Studiomc     (built-in SpliceLLM engine)
     - Frontier     (cloud, any OpenAI-compatible API)
 
 Each backend implements the :class:`BackendClient` abstract base class.

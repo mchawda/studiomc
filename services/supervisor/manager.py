@@ -55,6 +55,7 @@ MANAGED_SERVICES: dict[str, str] = {
     "clara": "clara/app.py",
     "lre": "lre/app.py",
     "orchestrator": "orchestrator/app.py",
+    "training": "training/app.py",
 }
 
 HEALTH_CHECK_INTERVAL = 5  # seconds

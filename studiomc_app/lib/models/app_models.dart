@@ -20,6 +20,23 @@ enum QualityMode { fast, cited, deep }
 
 enum OnboardingStep { welcome, scan, recommend, download, firstChat }
 
+enum TrainingSourceType { collection, extractPaste, extractFile }
+
+enum TrainingRunStatus { idle, preparing, training, completed, failed }
+
+// ── Personalization ──
+
+enum PersonalizationGoal {
+  answerQuestions, // → RAG / Knowledge Library
+  writeInStyle,   // → LoRA style adapter
+  followRules,    // → LoRA workflow/policy adapter
+  improveDomain,  // → LoRA domain fine-tune (advanced)
+}
+
+enum ExtractCategory { qa, facts, glossary, rules, templates, constraints }
+
+enum PersonalizationMethod { knowledgeLibrary, styleAdapter, workflowFollower }
+
 // ── Models ──
 
 class AIModel {
@@ -235,4 +252,91 @@ class Citation {
     required this.snippet,
     this.relevanceScore = 0,
   });
+}
+
+// ── Training / Adapters ──
+
+class Adapter {
+  final String id;
+  final String name;
+  final String baseModelId;
+  final TrainingSourceType sourceType;
+  final String? sourceRef;
+  final int diskBytes;
+  final DateTime createdAt;
+  final DateTime? lastUsedAt;
+  final bool isActive;
+
+  const Adapter({
+    required this.id,
+    required this.name,
+    required this.baseModelId,
+    required this.sourceType,
+    this.sourceRef,
+    this.diskBytes = 0,
+    required this.createdAt,
+    this.lastUsedAt,
+    this.isActive = false,
+  });
+}
+
+class TrainingRun {
+  final String id;
+  final String? adapterId;
+  final TrainingRunStatus status;
+  final double progressPercent;
+  final int? etaSeconds;
+  final String? errorMessage;
+  final DateTime startedAt;
+  final DateTime? completedAt;
+
+  const TrainingRun({
+    required this.id,
+    this.adapterId,
+    required this.status,
+    this.progressPercent = 0,
+    this.etaSeconds,
+    this.errorMessage,
+    required this.startedAt,
+    this.completedAt,
+  });
+}
+
+class SuggestedExtractPrompt {
+  final String id;
+  final String label;
+  final String prompt;
+
+  const SuggestedExtractPrompt({
+    required this.id,
+    required this.label,
+    required this.prompt,
+  });
+
+  static const List<SuggestedExtractPrompt> defaults = [
+    SuggestedExtractPrompt(
+      id: 'prompt-qa',
+      label: 'Q&A pairs',
+      prompt:
+          'Extract every question and a short answer from this document. Format each as:\nQ: [question]\nA: [answer]\n\nUse plain text, one Q/A pair per block.',
+    ),
+    SuggestedExtractPrompt(
+      id: 'prompt-facts',
+      label: 'Key facts',
+      prompt:
+          'List key facts and definitions from this text. One fact or definition per line. Use clear, concise language.',
+    ),
+    SuggestedExtractPrompt(
+      id: 'prompt-summaries',
+      label: 'Section summaries',
+      prompt:
+          'Summarize each section or major topic in 1–2 sentences. List them in order. Format: "Section/topic: summary."',
+    ),
+    SuggestedExtractPrompt(
+      id: 'prompt-glossary',
+      label: 'Terms & definitions',
+      prompt:
+          'Extract important terms, jargon, or acronyms and their definitions from this document. Format: Term: definition.',
+    ),
+  ];
 }

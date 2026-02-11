@@ -36,6 +36,8 @@ from common.schemas import (
     ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
+    SearchResult,
+    SearchResponse,
 )
 from common.database import Database
 
@@ -220,7 +222,7 @@ async def select_model(req: ModelSelectRequest) -> dict[str, Any]:
     ir = get_router()
 
     try:
-        # For Studiomc models, also check the DB and load via the engine
+        # For SpliceLLM (studiomc backend) models, also check the DB and load via the engine
         if req.backend == "studiomc" or (
             not req.backend and not any(
                 req.model_id.startswith(p)
@@ -373,6 +375,55 @@ async def ws_chat_stream(websocket: WebSocket):
     await websocket_stream_handler(
         websocket, ir, db_record_fn=_record_ws_to_db
     )
+
+
+# ── Search ────────────────────────────────────────────────────────────
+
+@router.get("/v1/search")
+async def search_messages(q: str, limit: int = 50) -> SearchResponse:
+    """Search chat messages by content using SQL LIKE.
+
+    Returns matching messages with their parent chat title and timestamp.
+    """
+    if not q or not q.strip():
+        return SearchResponse(query=q, results=[], total=0)
+
+    db = await Database.instance()
+    search_term = f"%{q.strip()}%"
+
+    rows = await db.fetchall(
+        """SELECT m.id, m.chat_id, m.role, m.content, m.created_at,
+                  c.title AS chat_title
+           FROM messages m
+           LEFT JOIN chats c ON c.id = m.chat_id
+           WHERE m.content LIKE ?
+           ORDER BY m.created_at DESC
+           LIMIT ?""",
+        (search_term, limit),
+    )
+
+    results: list[SearchResult] = []
+    for row in rows:
+        content = row["content"] or ""
+        # Build a snippet: find the match position and show surrounding context
+        lower_content = content.lower()
+        match_pos = lower_content.find(q.strip().lower())
+        if match_pos >= 0:
+            start = max(0, match_pos - 40)
+            end = min(len(content), match_pos + len(q) + 60)
+            snippet = ("…" if start > 0 else "") + content[start:end] + ("…" if end < len(content) else "")
+        else:
+            snippet = content[:100] + ("…" if len(content) > 100 else "")
+
+        results.append(SearchResult(
+            type="chat",
+            id=row["chat_id"] or row["id"],
+            title=row["chat_title"] or f"{row['role']} message",
+            snippet=snippet.strip(),
+            timestamp=row["created_at"] or "",
+        ))
+
+    return SearchResponse(query=q, results=results, total=len(results))
 
 
 # ── Database recording helpers ────────────────────────────────────────

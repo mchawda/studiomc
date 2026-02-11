@@ -7,6 +7,7 @@ import 'services/api_client.dart';
 import 'services/bundled_inference_service.dart';
 import 'services/database_service.dart';
 import 'services/inference_service.dart';
+import 'services/orchestrator_service.dart';
 import 'services/process_launcher.dart';
 import 'services/supervisor_service.dart';
 import 'services/hardware_service.dart';
@@ -25,43 +26,38 @@ void main() async {
   // ── Initialize local database ──
   final databaseService = DatabaseService();
 
-  // ── Initialize bundled inference engine (primary — zero dependencies) ──
+  // ── Initialize SpliceLLM (Python sidecar) ──
   final bundledInference = BundledInferenceService();
-  await bundledInference.init(preferredModel: settingsService.activeModelId);
+  // Start in background — don't block app launch
+  bundledInference.init(preferredModel: settingsService.activeModelId);
 
-  // ── Initialize Ollama as optional secondary backend ──
+  // ── Initialize Ollama (primary local inference for small models) ──
   final localInference = LocalInferenceService();
-  if (!bundledInference.available) {
-    // Only probe Ollama if bundled engine isn't running
-    await localInference.init(preferredModel: settingsService.activeModelId);
-  }
+  await localInference.init(preferredModel: settingsService.activeModelId);
 
   // Sync active model to settings
-  if (!settingsService.hasActiveModel) {
-    if (bundledInference.available && bundledInference.activeModel != null) {
-      settingsService.activeModelId = bundledInference.activeModelPath;
-    } else if (localInference.available && localInference.activeModel != null) {
-      settingsService.activeModelId = localInference.activeModel;
-    }
+  if (!settingsService.hasActiveModel &&
+      localInference.available &&
+      localInference.activeModel != null) {
+    settingsService.activeModelId = localInference.activeModel;
   }
 
-  // ── Create per-service API clients (backend optional) ──
+  // ── Create per-service API clients ──
   final supervisorApi = ApiClient(baseUrl: ServiceUrls.supervisor);
   final modelManagerApi = ApiClient(baseUrl: ServiceUrls.modelManager);
 
+  // Start full backend (supervisor + documents, clara, etc.) in background so
+  // Documents and other features can use it. Safe to call multiple times.
+  ProcessLauncher.launchBackend().then((_) {
+    supervisorApi.checkAvailable();
+  });
+
   final supervisorService = SupervisorService();
   final inferenceService = InferenceService();
+  final orchestratorService = OrchestratorService();
   final documentService = DocumentService();
   final hardwareService = HardwareService(supervisorApi);
   final modelManagerService = ModelManagerService(modelManagerApi);
-
-  // Try Python backend — non-blocking, app works without it
-  try {
-    await ProcessLauncher.launchBackend();
-    await supervisorApi.checkAvailable();
-  } catch (_) {
-    logService('main', 'Python backend not available — using local engines');
-  }
 
   runApp(
     MultiProvider(
@@ -69,6 +65,7 @@ void main() async {
         Provider<DatabaseService>.value(value: databaseService),
         Provider<ApiClient>.value(value: supervisorApi),
         Provider<InferenceService>.value(value: inferenceService),
+        Provider<OrchestratorService>.value(value: orchestratorService),
         Provider<HardwareService>.value(value: hardwareService),
         Provider<ModelManagerService>.value(value: modelManagerService),
         Provider<SupervisorService>.value(value: supervisorService),

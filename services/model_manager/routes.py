@@ -27,7 +27,7 @@ from common.schemas import (
 )
 
 from model_manager import autopilot, downloader, registry
-from model_manager.autopilot import BackendModelInfo
+from model_manager.autopilot import BackendModelInfo, fetch_adapters_from_db
 
 logger = logging.getLogger("model_manager.routes")
 
@@ -48,6 +48,8 @@ class RecommendRequest(BaseModel):
     hw_info: HardwareInfo
     user_intent: str | None = None
     include_backends: bool = True  # probe inference router for loaded models
+    include_adapters: bool = True  # boost models with trained adapters
+    query_context: str | None = None  # e.g. active collection name for adapter matching
 
 
 class VerifyResponse(BaseModel):
@@ -206,17 +208,25 @@ async def recommend_models(req: RecommendRequest):
     Takes hardware info and optional user intent, returns ranked model
     recommendations. When include_backends is True (default), probes the
     inference router for loaded models in Ollama / LM Studio and boosts
-    those in the ranking.
+    those in the ranking. When include_adapters is True (default), fetches
+    trained adapters from the database and boosts models that have
+    personalized adapters.
     """
     backend_models: list[BackendModelInfo] | None = None
+    adapter_list: list[autopilot.AdapterInfo] | None = None
 
     if req.include_backends:
         backend_models = await _fetch_backend_models()
+
+    if req.include_adapters:
+        adapter_list = await fetch_adapters_from_db()
 
     result = autopilot.recommend(
         hw=req.hw_info,
         user_intent=req.user_intent,
         backend_models=backend_models,
+        adapters=adapter_list,
+        query_context=req.query_context,
     )
     return result
 
@@ -230,6 +240,45 @@ async def get_curated_models():
 
 
 # ── Helpers ──
+
+async def _fetch_backend_models() -> list[BackendModelInfo]:
+    """Probe the inference router for models available in Ollama / LM Studio."""
+    models: list[BackendModelInfo] = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Probe Ollama
+            resp = await client.get(f"http://127.0.0.1:11434/api/tags")
+            if resp.status_code == 200:
+                data = resp.json()
+                for m in data.get("models", []):
+                    name = m.get("name", "")
+                    if name:
+                        models.append(BackendModelInfo(
+                            model_name=name,
+                            backend="ollama",
+                            loaded=False,
+                        ))
+
+            # Check which model is currently loaded (warm) in Ollama
+            try:
+                ps_resp = await client.get(f"http://127.0.0.1:11434/api/ps")
+                if ps_resp.status_code == 200:
+                    ps_data = ps_resp.json()
+                    loaded_names = {
+                        m.get("name", "")
+                        for m in ps_data.get("models", [])
+                    }
+                    for bm in models:
+                        if bm.model_name in loaded_names:
+                            bm.loaded = True
+            except Exception:
+                pass
+
+    except Exception:
+        logger.debug("Could not probe Ollama for backend models")
+
+    return models
+
 
 def _slug_from_ref(source_ref: str) -> str:
     """Generate a stable slug id from a source reference.

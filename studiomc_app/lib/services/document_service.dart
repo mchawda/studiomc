@@ -166,6 +166,25 @@ class DocumentService {
     }
   }
 
+  // ── Search ──────────────────────────────────────────────────────────
+
+  /// Search across all document content via the backend.
+  /// Returns a list of matching document chunks with snippets.
+  Future<List<Map<String, dynamic>>> searchDocuments(String query,
+      {int limit = 50}) async {
+    try {
+      final encoded = Uri.encodeQueryComponent(query);
+      final data = await _api.get(
+        '/documents/search?q=$encoded&limit=$limit',
+      );
+      final results = data['results'] as List<dynamic>? ?? [];
+      return results.cast<Map<String, dynamic>>();
+    } catch (e) {
+      logService('document', 'Document search failed', error: e);
+      return [];
+    }
+  }
+
   // ── Parsing helpers ───────────────────────────────────────────────
 
   Document _parseDocument(Map<String, dynamic> json) {

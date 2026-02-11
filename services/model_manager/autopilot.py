@@ -8,15 +8,16 @@ Heuristic approach:
 2. Score by predicted tok/s, quality tier, use-case fit
 3. Apply penalties for slow disk, CPU-only large models
 4. Boost models already loaded in an active backend (Ollama, LM Studio)
-5. Return top 3 recommended + overflow "bigger slower" list
+5. Boost models that have trained LoRA adapters (personalized models)
+6. Return top 3 recommended + overflow "bigger slower" list
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
+from common.database import Database
 from common.schemas import (
     AutopilotResult,
     HardwareInfo,
@@ -51,6 +52,11 @@ _SLOW_DISK_THRESHOLD_MBPS = 200.0  # Below this, apply disk penalty
 _CPU_LARGE_MODEL_THRESHOLD_B = 10.0  # Above this on CPU = heavy penalty
 _MIN_VIABLE_TOKS = 1.0  # Below 1 tok/s = avoid recommending
 
+# Adapter boost constants
+_ADAPTER_ACTIVE_BOOST = 20.0   # Active adapter for matching model
+_ADAPTER_INACTIVE_BOOST = 10.0 # Inactive adapter for matching model
+_ADAPTER_CONTEXT_BOOST = 8.0   # Extra boost when query context matches adapter goal
+
 
 @dataclass
 class _ScoredModel:
@@ -62,6 +68,8 @@ class _ScoredModel:
     score: float  # higher = better recommendation
     explanation: str
     on_gpu: bool
+    adapter_id: str | None = None
+    adapter_reason: str | None = None
 
 
 @dataclass
@@ -72,11 +80,140 @@ class BackendModelInfo:
     loaded: bool = False  # True if the model is currently loaded/warm
 
 
+@dataclass
+class AdapterInfo:
+    """Describes a trained LoRA adapter for a base model."""
+    adapter_id: str
+    adapter_name: str
+    base_model_id: str
+    source_type: str  # "collection", "extract_paste", "extract_file"
+    source_ref: str | None = None
+    is_active: bool = False
+    goal: str | None = None  # personalization goal if stored
+
+
+async def fetch_adapters_from_db() -> list[AdapterInfo]:
+    """Query the database for all trained adapters.
+
+    Returns a list of AdapterInfo objects. Returns empty list on error
+    so the Autopilot can still function without training data.
+    """
+    try:
+        db = await Database.instance()
+        rows = await db.fetchall(
+            """
+            SELECT id, name, base_model_id, source_type, source_ref, is_active
+            FROM adapters
+            ORDER BY is_active DESC, created_at DESC
+            """
+        )
+        return [
+            AdapterInfo(
+                adapter_id=row["id"],
+                adapter_name=row["name"],
+                base_model_id=row["base_model_id"],
+                source_type=row["source_type"],
+                source_ref=row["source_ref"],
+                is_active=bool(row["is_active"]),
+            )
+            for row in rows
+        ]
+    except Exception:
+        logger.debug("Could not fetch adapters from DB — continuing without adapter data")
+        return []
+
+
+def _match_adapter_to_model(
+    model: AIModel,
+    adapters: list[AdapterInfo],
+) -> AdapterInfo | None:
+    """Find the best matching adapter for a given model.
+
+    Matching strategy:
+    - Exact match on base_model_id
+    - Prefix match (e.g. adapter base "llama3.2" matches model id "llama-3.2-3b-q4km")
+    - Name substring match (fuzzy)
+
+    Prefers active adapters over inactive ones.
+    """
+    model_id_lower = (model.id or "").lower()
+    model_name_lower = (model.name or "").lower()
+
+    best: AdapterInfo | None = None
+
+    for adapter in adapters:
+        base_lower = adapter.base_model_id.lower()
+
+        # Exact match
+        matched = (
+            base_lower == model_id_lower
+            or base_lower == model_name_lower
+        )
+
+        # Prefix / substring match
+        if not matched:
+            # Normalize: remove hyphens, dots for fuzzy comparison
+            norm_base = base_lower.replace("-", "").replace(".", "").replace("_", "")
+            norm_model_id = model_id_lower.replace("-", "").replace(".", "").replace("_", "")
+            norm_model_name = model_name_lower.replace("-", "").replace(".", "").replace("_", "")
+
+            matched = (
+                norm_base in norm_model_id
+                or norm_base in norm_model_name
+                or norm_model_id.startswith(norm_base.split(":")[0])
+            )
+
+        if matched:
+            # Prefer active adapter
+            if best is None or (adapter.is_active and not best.is_active):
+                best = adapter
+
+    return best
+
+
+def _adapter_context_matches(
+    adapter: AdapterInfo,
+    user_intent: str | None,
+    query_context: str | None = None,
+) -> bool:
+    """Check if the user's query context matches the adapter's training goal.
+
+    Returns True if the adapter is contextually relevant to the current
+    use case, which earns an extra scoring boost.
+    """
+    if not user_intent and not query_context:
+        return False
+
+    search_text = f"{user_intent or ''} {query_context or ''}".lower()
+
+    # If the adapter was trained on a collection, check if the user is
+    # working in a document/collection context
+    if adapter.source_type == "collection":
+        if any(kw in search_text for kw in ("doc", "document", "collection", "file", "pdf", "knowledge")):
+            return True
+
+    # If the adapter has a source_ref (e.g. collection name), check for matches
+    if adapter.source_ref:
+        ref_lower = adapter.source_ref.lower()
+        if ref_lower in search_text:
+            return True
+
+    # Check goal keywords
+    if adapter.goal:
+        goal_lower = adapter.goal.lower()
+        if any(kw in search_text for kw in goal_lower.split()):
+            return True
+
+    return False
+
+
 def recommend(
     hw: HardwareInfo,
     user_intent: str | None = None,
     models: list[AIModel] | None = None,
     backend_models: list[BackendModelInfo] | None = None,
+    adapters: list[AdapterInfo] | None = None,
+    query_context: str | None = None,
 ) -> AutopilotResult:
     """Run the Autopilot recommendation algorithm.
 
@@ -86,12 +223,17 @@ def recommend(
         models: Model catalog to score. Defaults to CURATED_MODELS.
         backend_models: Models available/loaded in external backends
                         (Ollama, LM Studio). Gets a scoring boost.
+        adapters: Trained LoRA adapters. Models with matching adapters
+                  get a significant scoring boost (personalized > untrained > cloud).
+        query_context: Optional context string (e.g. active collection name)
+                       used to determine adapter relevance.
 
     Returns:
         AutopilotResult with top 3 recommended + bigger_slower overflow.
     """
     catalog = models if models is not None else CURATED_MODELS
     _backend_names = _build_backend_lookup(backend_models)
+    _adapter_list = adapters or []
     has_gpu = hw.vram_bytes is not None and hw.vram_bytes > 0
     available_vram = hw.vram_bytes or 0
     available_ram = hw.ram_bytes
@@ -177,7 +319,39 @@ def recommend(
                 ttft_ms = min(ttft_ms, 500)  # warm model = fast first token
                 tok_s *= 1.5  # warm models are often faster
 
-        total_score = speed_score + quality_score + use_case_score + backend_bonus - penalty
+        # ── Step 4c: Adapter (personalization) bonus ──
+        adapter_bonus = 0.0
+        matched_adapter = _match_adapter_to_model(model, _adapter_list)
+        adapter_id: str | None = None
+        adapter_reason: str | None = None
+
+        if matched_adapter:
+            adapter_id = matched_adapter.adapter_id
+
+            if matched_adapter.is_active:
+                adapter_bonus = _ADAPTER_ACTIVE_BOOST
+                adapter_reason = f"Personalized for your documents"
+            else:
+                adapter_bonus = _ADAPTER_INACTIVE_BOOST
+                adapter_reason = f"Trained adapter \"{matched_adapter.adapter_name}\" available"
+
+            # Extra context-matching boost
+            if _adapter_context_matches(matched_adapter, user_intent, query_context):
+                adapter_bonus += _ADAPTER_CONTEXT_BOOST
+                if matched_adapter.goal:
+                    adapter_reason = f"Trained for {matched_adapter.goal}"
+                elif matched_adapter.source_type == "collection":
+                    adapter_reason = "Personalized for your documents"
+
+            logger.debug(
+                "Adapter boost for %s: +%.1f (%s)",
+                model.name, adapter_bonus, adapter_reason,
+            )
+
+        total_score = (
+            speed_score + quality_score + use_case_score
+            + backend_bonus + adapter_bonus - penalty
+        )
 
         # ── Step 5: Determine speed rating ──
         speed_rating = _compute_speed_rating(tok_s, ttft_ms)
@@ -186,6 +360,7 @@ def recommend(
         explanation = _build_explanation(
             model, tok_s, ttft_ms, speed_rating, on_gpu, params_b,
             backend_info=backend_info,
+            adapter_info=matched_adapter,
         )
 
         scored.append(_ScoredModel(
@@ -196,6 +371,8 @@ def recommend(
             score=total_score,
             explanation=explanation,
             on_gpu=on_gpu,
+            adapter_id=adapter_id,
+            adapter_reason=adapter_reason,
         ))
 
     # ── Sort and partition ──
@@ -214,6 +391,8 @@ def recommend(
             explanation=sm.explanation,
             disk_bytes=sm.model.disk_bytes or 0,
             recommended=True,
+            recommended_adapter=sm.adapter_id,
+            adapter_reason=sm.adapter_reason,
         )
 
         if sm.predicted_tok_s < _MIN_VIABLE_TOKS:
@@ -292,12 +471,20 @@ def _build_explanation(
     on_gpu: bool,
     params_b: float,
     backend_info: BackendModelInfo | None = None,
+    adapter_info: AdapterInfo | None = None,
 ) -> str:
     """Generate a plain-English explanation for the recommendation."""
     parts: list[str] = []
 
     # Model identity
     parts.append(f"{model.name}")
+
+    # Adapter personalization
+    if adapter_info:
+        if adapter_info.is_active:
+            parts.append(f"personalized with \"{adapter_info.adapter_name}\"")
+        else:
+            parts.append(f"has trained adapter \"{adapter_info.adapter_name}\"")
 
     # Backend availability
     if backend_info:

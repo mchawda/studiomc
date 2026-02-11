@@ -3,7 +3,7 @@
 Supported backends (in priority order):
     1. Ollama       (localhost:11434)  — preferred local runtime
     2. LM Studio    (localhost:1234)   — preferred local runtime
-    3. Studiomc     (built-in)        — Studiomc's own out-of-core engine
+    3. Studiomc     (built-in)        — SpliceLLM engine
     4. Frontier API (cloud, optional) — OpenAI / Anthropic / any OpenAI-compatible
 
 The router auto-detects local backends on startup and merges their model
@@ -11,9 +11,18 @@ lists into a single unified catalog for the UI.
 
 Routing rules:
     - Local backends always preferred over cloud
-    - If same model is available on multiple backends: Ollama > LM Studio > Studiomc
+    - If same model is available on multiple backends: Ollama > LM Studio > SpliceLLM
     - Frontier APIs are only used when the user explicitly selects a cloud model
     - All cloud requests require a user consent flag
+
+Phase 3 enhancements:
+    - Crash-proof model switching via safe_switch (never leaves engine broken)
+    - OOM prevention via MemoryGuard preflight checks
+    - Graceful fallback chain: primary → SpliceLLM → error message (never crash)
+    - Auto-recovery: retry on transient failures before falling back
+
+Phase 4 enhancements:
+    - Adapter activation / deactivation during inference via AdapterLoader
 """
 
 from __future__ import annotations
@@ -39,8 +48,14 @@ from inference.backends import (
     StudiomcClient,
     FrontierClient,
 )
+from inference.core.loader import safe_switch, SwitchResult
+from inference.core.memory_guard import MemoryGuard
+from inference.core.adapter_loader import AdapterLoader
 
 logger = logging.getLogger("inference.router")
+
+# Maximum number of auto-retry attempts before falling back
+_MAX_RETRIES = 1
 
 
 class InferenceRouter:
@@ -75,6 +90,12 @@ class InferenceRouter:
         self._active_backend_model_id: str | None = None  # backend-native id (e.g. "llama3.2:3b")
         self._lock = asyncio.Lock()
 
+        # Phase 3: OOM prevention
+        self._memory_guard = MemoryGuard()
+
+        # Phase 4: Adapter management
+        self._adapter_loader = AdapterLoader()
+
         # Always register the built-in backends
         self._backends["ollama"] = OllamaClient()
         self._backends["lmstudio"] = LMStudioClient()
@@ -102,8 +123,18 @@ class InferenceRouter:
 
     @property
     def engine(self) -> InferenceEngine:
-        """Access the underlying Studiomc engine."""
+        """Access the underlying SpliceLLM engine."""
         return self._engine
+
+    @property
+    def memory_guard(self) -> MemoryGuard:
+        """Access the memory guard for status / manual checks."""
+        return self._memory_guard
+
+    @property
+    def adapter_loader(self) -> AdapterLoader:
+        """Access the adapter loader for adapter management."""
+        return self._adapter_loader
 
     # ── Frontier management ───────────────────────────────────────────
 
@@ -153,6 +184,8 @@ class InferenceRouter:
         ``_backend_info`` for subsequent calls to
         ``get_backend_status()``.
 
+        Also starts the memory monitor in the background.
+
         Returns:
             Dict of backend_name -> BackendInfo.
         """
@@ -176,7 +209,24 @@ class InferenceRouter:
                 "Backend probe complete — online: %s",
                 ", ".join(online) if online else "(none)",
             )
+
+            # Start memory monitor
+            self._memory_guard.start_monitor(
+                unload_callback=self._emergency_unload_sync,
+            )
+
             return results
+
+    def _emergency_unload_sync(self) -> None:
+        """Synchronous wrapper for emergency model unload (called by MemoryGuard)."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self._engine.unload_model())
+            else:
+                loop.run_until_complete(self._engine.unload_model())
+        except Exception as e:
+            logger.error("Emergency unload failed: %s", e)
 
     def get_backend_status(self) -> dict[str, BackendInfo]:
         """Return the last-probed backend status (no network calls)."""
@@ -208,7 +258,7 @@ class InferenceRouter:
 
         return all_models
 
-    # ── Model selection ───────────────────────────────────────────────
+    # ── Model selection (with crash-proof switching) ──────────────────
 
     async def select_model(
         self,
@@ -217,12 +267,15 @@ class InferenceRouter:
     ) -> dict[str, str]:
         """Set the active model and backend for inference.
 
+        Uses crash-proof ``safe_switch()`` for SpliceLLM model changes
+        and ``MemoryGuard.preflight_check()`` to prevent OOM.
+
         Args:
             model_id: Unified model id (e.g. ``"ollama/llama3.2:3b"``) or a
                       bare model id that will be searched across backends.
             backend:  Force a specific backend name. If ``None``, the router
                       auto-selects based on priority (Ollama > LM Studio >
-                      Studiomc > Frontier).
+                      SpliceLLM > Frontier).
 
         Returns:
             ``{"model_id": ..., "backend": ..., "backend_model_id": ...}``
@@ -246,11 +299,19 @@ class InferenceRouter:
                 self._active_model_id = model_id
                 self._active_backend_model_id = backend_model_id
 
-                # For Studiomc, we need to load the model into the engine
+                # For SpliceLLM (studiomc backend), use safe_switch
                 if resolved_backend == "studiomc" and isinstance(
                     client, StudiomcClient
                 ):
-                    await client.load_model(backend_model_id, backend_model_id)
+                    result = await self._safe_load_studiomc(
+                        backend_model_id, backend_model_id
+                    )
+                    if not result.success:
+                        logger.warning(
+                            "SpliceLLM safe_switch failed: %s", result.error
+                        )
+                        # Don't raise — the error is logged and the router
+                        # can still serve from previously loaded model
 
                 logger.info(
                     "Selected model %s on backend %s",
@@ -331,15 +392,100 @@ class InferenceRouter:
                 self._active_backend_name = "studiomc"
                 self._active_model_id = f"studiomc/{model_id}"
                 self._active_backend_model_id = model_id
-                await studiomc_client.load_model(model_id, model_id)
+                result = await self._safe_load_studiomc(model_id, model_id)
+                if not result.success:
+                    logger.warning("Fallback SpliceLLM load failed: %s", result.error)
                 logger.info(
-                    "Falling back to Studiomc engine for model %s", model_id
+                    "Falling back to SpliceLLM for model %s", model_id
                 )
                 return {
                     "model_id": f"studiomc/{model_id}",
                     "backend": "studiomc",
                     "backend_model_id": model_id,
                 }
+
+    async def _safe_load_studiomc(
+        self,
+        model_id: str,
+        model_path: str,
+    ) -> SwitchResult:
+        """Load a model into SpliceLLM with OOM preflight and crash-proof switching.
+
+        1. Run MemoryGuard preflight check.
+        2. If memory is insufficient, return failure with suggestion.
+        3. Otherwise, use safe_switch for crash-proof loading.
+        """
+        # Preflight memory check
+        preflight = self._memory_guard.preflight_check(model_path, use_ooc=True)
+        if not preflight.can_load:
+            logger.warning(
+                "OOM preflight failed for %s: %s", model_id, preflight.message
+            )
+            return SwitchResult(
+                success=False,
+                active_model_id=self._engine.active_model_id,
+                active_model_path=self._engine.state.active_model_path,
+                error=f"OOM prevention: {preflight.message}. {preflight.suggestion or ''}",
+            )
+
+        # Crash-proof switch
+        from_model = self._engine.active_model_id
+        result = await safe_switch(
+            self._engine, from_model, model_id, model_path
+        )
+
+        # Track loaded model in memory guard
+        if result.success:
+            estimated = MemoryGuard.estimate_ooc_peak_bytes(model_path)
+            self._memory_guard.register_loaded_model(model_id, estimated)
+
+        return result
+
+    # ── Adapter management ────────────────────────────────────────────
+
+    async def activate_adapter(self, adapter_path: str) -> dict:
+        """Activate a LoRA adapter on the currently loaded base model.
+
+        The base model must be loaded in the SpliceLLM engine (not via
+        Ollama / LM Studio). The adapter is hot-swapped without
+        reloading the base model.
+
+        Args:
+            adapter_path: Path to the PEFT adapter directory.
+
+        Returns:
+            Dict with status and adapter info.
+        """
+        if not self._engine.is_loaded:
+            return {"success": False, "error": "No model loaded"}
+
+        if self._active_backend_name != "studiomc":
+            return {
+                "success": False,
+                "error": "Adapters only supported on the SpliceLLM backend",
+            }
+
+        try:
+            info = await self._adapter_loader.load_adapter(
+                self._engine, adapter_path
+            )
+            return {"success": True, **info}
+        except Exception as e:
+            logger.error("Failed to activate adapter: %s", e)
+            return {"success": False, "error": str(e)}
+
+    async def deactivate_adapter(self) -> dict:
+        """Remove the active adapter, returning to the base model."""
+        try:
+            await self._adapter_loader.unload_adapter(self._engine)
+            return {"success": True, "message": "Adapter deactivated"}
+        except Exception as e:
+            logger.error("Failed to deactivate adapter: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def get_adapter_status(self) -> dict:
+        """Return current adapter status."""
+        return self._adapter_loader.status()
 
     # ── Generation (streaming) ────────────────────────────────────────
 
@@ -350,6 +496,12 @@ class InferenceRouter:
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Route streaming generation to the active backend.
 
+        Graceful fallback chain:
+            primary backend → auto-retry → SpliceLLM → error message
+
+        Never crashes. If all backends fail, yields an error message
+        as the final token instead of raising.
+
         Satisfies the ``StreamGenerator`` protocol, so this router can
         be passed directly to ``sse_generate()`` and
         ``websocket_stream_handler()``.
@@ -359,14 +511,76 @@ class InferenceRouter:
             the end with the completed ``GenerationMetrics``.
         """
         if not self._active_backend or not self._active_backend_model_id:
-            raise RuntimeError(
-                "No model selected. Call select_model() first."
-            )
+            yield "[Error: No model selected. Call select_model() first.]", None
+            return
 
-        async for token, m in self._active_backend.generate_stream(
-            self._active_backend_model_id, messages, **kwargs
-        ):
-            yield token, m
+        # Try primary backend (with retry)
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async for token, m in self._active_backend.generate_stream(
+                    self._active_backend_model_id, messages, **kwargs
+                ):
+                    yield token, m
+                return  # success
+            except Exception as primary_err:
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "Backend %s failed (attempt %d/%d): %s — retrying",
+                        self._active_backend_name,
+                        attempt + 1,
+                        _MAX_RETRIES + 1,
+                        primary_err,
+                    )
+                    await asyncio.sleep(0.5)  # brief pause before retry
+                    continue
+
+                # All retries exhausted — try SpliceLLM fallback
+                if self._active_backend_name != "studiomc":
+                    logger.warning(
+                        "Backend %s failed after %d attempts for model %s: %s — falling back to SpliceLLM",
+                        self._active_backend_name,
+                        _MAX_RETRIES + 1,
+                        self._active_backend_model_id,
+                        primary_err,
+                    )
+                    studiomc = self._backends.get("studiomc")
+                    if studiomc is not None:
+                        model_id = self._active_backend_model_id or "unknown"
+                        try:
+                            if isinstance(studiomc, StudiomcClient):
+                                result = await self._safe_load_studiomc(model_id, model_id)
+                                if not result.success:
+                                    raise RuntimeError(result.error or "Safe load failed")
+                        except Exception as load_err:
+                            logger.warning(
+                                "SpliceLLM could not load model %s: %s",
+                                model_id, load_err,
+                            )
+                            # Final fallback: yield error message instead of crashing
+                            yield (
+                                f"[Error: All backends failed. "
+                                f"Primary: {primary_err}. Fallback: {load_err}]"
+                            ), None
+                            return
+
+                        # Stream from SpliceLLM fallback
+                        try:
+                            async for token, m in studiomc.generate_stream(
+                                model_id, messages, **kwargs
+                            ):
+                                yield token, m
+                            return
+                        except Exception as fallback_err:
+                            logger.error("SpliceLLM fallback also failed: %s", fallback_err)
+                            yield (
+                                f"[Error: All backends failed. "
+                                f"Primary: {primary_err}. Fallback: {fallback_err}]"
+                            ), None
+                            return
+
+                # Primary is studiomc and it failed — yield error message
+                yield f"[Error: Generation failed: {primary_err}]", None
+                return
 
     # ── Generation (non-streaming) ────────────────────────────────────
 
@@ -377,22 +591,84 @@ class InferenceRouter:
     ) -> tuple[str, GenerationMetrics]:
         """Route non-streaming generation to the active backend.
 
+        Falls back to SpliceLLM if primary backend fails. Never crashes —
+        returns an error string if all backends fail.
+
         Returns:
             ``(text, metrics)`` tuple.
         """
         if not self._active_backend or not self._active_backend_model_id:
-            raise RuntimeError(
-                "No model selected. Call select_model() first."
+            return (
+                "[Error: No model selected. Call select_model() first.]",
+                GenerationMetrics(),
             )
 
-        return await self._active_backend.generate(
-            self._active_backend_model_id, messages, **kwargs
+        # Try primary with retry
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return await self._active_backend.generate(
+                    self._active_backend_model_id, messages, **kwargs
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "Backend %s failed (attempt %d): %s — retrying",
+                        self._active_backend_name, attempt + 1, e,
+                    )
+                    await asyncio.sleep(0.5)
+
+        # Primary exhausted — try SpliceLLM fallback
+        if self._active_backend_name != "studiomc":
+            logger.warning(
+                "Backend %s failed: %s — falling back to SpliceLLM",
+                self._active_backend_name, last_error,
+            )
+            studiomc = self._backends.get("studiomc")
+            if studiomc is not None:
+                model_id = self._active_backend_model_id or "unknown"
+                try:
+                    if isinstance(studiomc, StudiomcClient):
+                        result = await self._safe_load_studiomc(model_id, model_id)
+                        if not result.success:
+                            raise RuntimeError(result.error or "Safe load failed")
+                    return await studiomc.generate(
+                        model_id, messages, **kwargs
+                    )
+                except Exception as fallback_err:
+                    logger.error("SpliceLLM fallback also failed: %s", fallback_err)
+                    return (
+                        f"[Error: All backends failed. "
+                        f"Primary: {last_error}. Fallback: {fallback_err}]",
+                        GenerationMetrics(),
+                    )
+
+        # All fallbacks exhausted — return error message (never crash)
+        return (
+            f"[Error: Generation failed: {last_error}]",
+            GenerationMetrics(),
         )
+
+    # ── Memory status ─────────────────────────────────────────────────
+
+    def memory_status(self) -> dict:
+        """Return current memory usage and guard status."""
+        return self._memory_guard.status()
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def close(self) -> None:
         """Shut down all backend clients and release resources."""
+        # Stop memory monitor
+        self._memory_guard.stop_monitor()
+
+        # Unload any active adapter
+        try:
+            await self._adapter_loader.unload_adapter(self._engine)
+        except Exception:
+            pass
+
         for name, client in self._backends.items():
             try:
                 await client.close()

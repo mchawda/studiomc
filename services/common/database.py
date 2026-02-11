@@ -159,6 +159,32 @@ CREATE TABLE IF NOT EXISTS reasoning_runs (
     FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS adapters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    base_model_id TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('collection', 'extract_paste', 'extract_file')),
+    source_ref TEXT,
+    disk_bytes INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(base_model_id) REFERENCES models(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS training_runs (
+    id TEXT PRIMARY KEY,
+    adapter_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'preparing', 'training', 'completed', 'failed')),
+    progress_percent REAL DEFAULT 0.0,
+    eta_seconds INTEGER,
+    error_message TEXT,
+    metrics_json TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    FOREIGN KEY(adapter_id) REFERENCES adapters(id) ON DELETE SET NULL
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id);
