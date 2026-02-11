@@ -187,8 +187,11 @@ jobs:
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/share/boost /usr/local/graalvm /usr/local/.ghcup
+            /usr/local/share/boost /usr/local/graalvm /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go \
+            /opt/hostedtoolcache/node /usr/share/swift
           sudo docker image prune --all --force 2>/dev/null || true
+          sudo apt-get clean
           df -h /
 
       - uses: actions/checkout@v4
@@ -213,8 +216,11 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install ".[inference]"
           pip install pyinstaller
+          pip cache purge
+          rm -rf /home/runner/.cache/pip
 
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
