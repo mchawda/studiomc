@@ -48,7 +48,7 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install -e ".[inference]"
+          pip install ".[inference]"
           pip install pyinstaller
 
       - name: Build services bundle
@@ -75,7 +75,7 @@ jobs:
   # ── macOS Intel ──────────────────────────────────────────────────────
   macos-intel:
     name: macOS (Intel)
-    runs-on: macos-13  # Intel runner
+    runs-on: macos-15  # latest macOS runner
     steps:
       - uses: actions/checkout@v4
 
@@ -93,7 +93,7 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install -e ".[inference]"
+          pip install ".[inference]"
           pip install pyinstaller
 
       - name: Build services bundle
@@ -139,7 +139,7 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/Scripts/activate
-          pip install -e ".[inference]"
+          pip install ".[inference]"
           pip install pyinstaller
 
       - name: Build services bundle
@@ -203,7 +203,7 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install -e ".[inference]"
+          pip install ".[inference]"
           pip install pyinstaller
 
       - name: Build services bundle
