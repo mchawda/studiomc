@@ -7,13 +7,14 @@ exclusive property of the Company.
 
 Permission is hereby granted, subject to the following conditions:
 
-1. The Software may be used for internal evaluation and non-commercial
-   purposes only.
-2. No part of the Software may be copied, modified, distributed, sublicensed,
-   or used in any commercial capacity without prior written permission from
-   the Company.
-3. This Software is not open source and is not covered by any standard open
-   source license (e.g., MIT, GPL).
+1. You may use the compiled application for personal or internal business
+   purposes at no cost.
+2. You may view the source code for learning, reference, and transparency.
+3. You may NOT copy, modify, fork, distribute, sublicense, or use the source
+   code in any commercial capacity without prior written permission.
+4. You may NOT use the source code to build a competing product or service.
+5. You may NOT redistribute the compiled application outside of the official
+   release channel.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED.

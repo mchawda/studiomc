@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/mchawda/studiomc/releases/latest"><img src="https://img.shields.io/github/v/release/mchawda/studiomc?style=flat-square&color=4A90D9" alt="Release" /></a>
-  <a href="https://github.com/mchawda/studiomc/blob/main/LICENSE.md"><img src="https://img.shields.io/badge/license-Proprietary-red?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/mchawda/studiomc/blob/main/LICENSE.md"><img src="https://img.shields.io/badge/license-Source--Available-orange?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-dart-02569B?style=flat-square&logo=flutter" alt="Flutter" />
 </p>
@@ -162,4 +162,4 @@ Built on the shoulders of:
 
 ## License
 
-Proprietary — [NIA Pte Ltd](LICENSE.md). See `THIRD_PARTY_NOTICES.md` for open-source attribution.
+Source-available — free to use, not open-source. See [LICENSE.md](LICENSE.md) for full terms and `THIRD_PARTY_NOTICES.md` for open-source attribution. Copyright 2024-2026 NIA Pte Ltd.

@@ -10,27 +10,38 @@
 
 ## 1. GRANT OF LICENSE
 
-NIA Pte Ltd ("Licensor") grants to the Licensee a **non-exclusive, non-transferable, revocable license** to use the Software solely for internal evaluation and non-commercial purposes, unless a separate commercial agreement has been executed in writing.
+NIA Pte Ltd ("Licensor") grants you ("Licensee") a **non-exclusive, worldwide, royalty-free license** to:
+
+- **Use** the compiled application for any personal or internal business purpose
+- **View** the source code for learning, reference, and transparency
+- **Report issues and suggest improvements** via the project's issue tracker
 
 ---
 
-## 2. SCOPE OF USE
-
-- Licensee may **view and evaluate** the source code.
-- **Modification, distribution, sublicensing, or integration into any commercial or production system** is strictly prohibited unless explicitly authorized.
-- License is limited to the **Licensee's organization only** and may not be shared externally.
-- This software is **not open source** and is **not licensed under any public license (e.g., MIT, GPL)**.
-
----
-
-## 3. RESTRICTIONS
+## 2. RESTRICTIONS
 
 Licensee shall NOT:
-- Use the software for **any commercial purpose** without written approval
-- Reverse engineer, decompile, disassemble, or attempt to derive source code
-- Remove or obscure any copyright, trademark, or proprietary notices
-- Share, distribute, or re-host any part of the codebase
-- Use the software to build a **competing product**
+- **Modify, fork, or create derivative works** of the source code without written approval
+- **Redistribute** the source code or compiled binaries through any channel other than this official repository
+- **Sell, sublicense, or commercially exploit** the source code or any substantial portion of it
+- **Use the source code to build a competing product** or service
+- **Remove or obscure** any copyright, trademark, SPDX headers, or proprietary notices
+- **Re-host** the source code or release artifacts on any other platform
+
+---
+
+## 3. WHAT IS ALLOWED
+
+| Action | Allowed? |
+|---|---|
+| Download and use the app | Yes |
+| View source code on GitHub | Yes |
+| File issues, report bugs | Yes |
+| Share the official download link | Yes |
+| Copy/fork/modify the source code | No — requires written permission |
+| Redistribute binaries | No — use official releases only |
+| Use code in your own product | No — requires commercial license |
+| Build a competing product | No |
 
 ---
 
@@ -38,9 +49,9 @@ Licensee shall NOT:
 
 This license is effective until terminated. It will terminate automatically without notice if:
 - Licensee fails to comply with any terms
-- Licensee uses the software for unauthorized purposes
+- Licensee uses the Software for unauthorized purposes
 
-Upon termination, all copies of the Software must be deleted or destroyed.
+Upon termination, all copies of the Software (except officially downloaded applications for personal use) must be deleted or destroyed.
 
 ---
 
