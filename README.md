@@ -70,7 +70,6 @@ Studiomc is a desktop AI assistant that runs large language models entirely on y
 4. The model downloads from HuggingFace automatically
 5. You're chatting in under 2 minutes
 
-> **Note:** The app is currently unsigned. On first launch, right-click the app and select "Open" to bypass macOS Gatekeeper.
 
 ### Optional: Ollama / LM Studio
 

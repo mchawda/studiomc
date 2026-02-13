@@ -60,15 +60,77 @@ jobs:
       - name: Build macOS app
         run: bash scripts/build/build_macos.sh --skip-services
 
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - name: Sign the app
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
+          IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
+
+          # Sign embedded services binaries (inside-out)
+          find "$APP_PATH/Contents/Resources/studiomc_services" -type f \
+            \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
+            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
+
+          # Sign the main app bundle
+          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
+          codesign --verify --verbose "$APP_PATH"
+
       - name: Create DMG
         run: |
           brew install create-dmg
           bash scripts/release/macos_dmg.sh
 
+      - name: Sign the DMG
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
+          IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
+          codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
+
+      - name: Notarize the DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+
       - name: Rename artifact
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mv dist/Studiomc-*-macOS.dmg "dist/Studiomc-${VERSION}-macOS-AppleSilicon.dmg"
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,15 +167,77 @@ jobs:
       - name: Build macOS app
         run: bash scripts/build/build_macos.sh --skip-services
 
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - name: Sign the app
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
+          IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
+
+          # Sign embedded services binaries (inside-out)
+          find "$APP_PATH/Contents/Resources/studiomc_services" -type f \
+            \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
+            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
+
+          # Sign the main app bundle
+          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
+          codesign --verify --verbose "$APP_PATH"
+
       - name: Create DMG
         run: |
           brew install create-dmg
           bash scripts/release/macos_dmg.sh
 
+      - name: Sign the DMG
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
+          IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
+          codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
+
+      - name: Notarize the DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+
       - name: Rename artifact
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mv dist/Studiomc-*-macOS.dmg "dist/Studiomc-${VERSION}-macOS-Intel.dmg"
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
