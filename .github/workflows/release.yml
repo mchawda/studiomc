@@ -87,14 +87,23 @@ jobs:
           APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
 
-          # Sign embedded services binaries (inside-out)
-          find "$APP_PATH/Contents/Resources/studiomc_services" -type f \
-            \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
-            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
+          # Sign ALL Mach-O binaries inside the bundle (inside-out)
+          find "$APP_PATH" -type f | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" || true
+            fi
+          done
+
+          # Sign all .dylib and .framework explicitly
+          find "$APP_PATH" \( -name "*.dylib" -o -name "*.framework" \) | while read -r f; do
+            codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" || true
+          done
 
           # Sign the main app bundle
-          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
-          codesign --verify --verbose "$APP_PATH"
+          codesign --force --deep --sign "$IDENTITY" --options runtime \
+            --entitlements "studiomc_app/macos/Runner/Release.entitlements" \
+            --timestamp "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Create DMG
         run: |
@@ -116,11 +125,24 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
-          xcrun notarytool submit "$DMG_PATH" \
+          SUBMISSION=$(xcrun notarytool submit "$DMG_PATH" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" \
-            --wait
+            --wait --output-format json)
+          echo "$SUBMISSION"
+          STATUS=$(echo "$SUBMISSION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','Unknown'))")
+          ID=$(echo "$SUBMISSION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed with status: $STATUS"
+            xcrun notarytool log "$ID" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD"
+            exit 1
+          fi
+
           xcrun stapler staple "$DMG_PATH"
 
       - name: Rename artifact
@@ -194,14 +216,23 @@ jobs:
           APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
 
-          # Sign embedded services binaries (inside-out)
-          find "$APP_PATH/Contents/Resources/studiomc_services" -type f \
-            \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
-            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
+          # Sign ALL Mach-O binaries inside the bundle (inside-out)
+          find "$APP_PATH" -type f | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" || true
+            fi
+          done
+
+          # Sign all .dylib and .framework explicitly
+          find "$APP_PATH" \( -name "*.dylib" -o -name "*.framework" \) | while read -r f; do
+            codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" || true
+          done
 
           # Sign the main app bundle
-          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
-          codesign --verify --verbose "$APP_PATH"
+          codesign --force --deep --sign "$IDENTITY" --options runtime \
+            --entitlements "studiomc_app/macos/Runner/Release.entitlements" \
+            --timestamp "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Create DMG
         run: |
@@ -223,11 +254,24 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           DMG_PATH=$(ls dist/Studiomc-*-macOS.dmg)
-          xcrun notarytool submit "$DMG_PATH" \
+          SUBMISSION=$(xcrun notarytool submit "$DMG_PATH" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" \
-            --wait
+            --wait --output-format json)
+          echo "$SUBMISSION"
+          STATUS=$(echo "$SUBMISSION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','Unknown'))")
+          ID=$(echo "$SUBMISSION" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed with status: $STATUS"
+            xcrun notarytool log "$ID" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD"
+            exit 1
+          fi
+
           xcrun stapler staple "$DMG_PATH"
 
       - name: Rename artifact
