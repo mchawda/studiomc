@@ -46,20 +46,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
 
-      - name: Install Python dependencies
-        run: |
-          cd services
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install ".[inference]"
-          pip install pyinstaller
-
-      - name: Build services bundle
-        run: bash scripts/build/build_services.sh
-
-      - name: Build macOS app
-        run: bash scripts/build/build_macos.sh --skip-services
-
+      # ── Import certificate BEFORE building ──
       - name: Import signing certificate
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -80,7 +67,84 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-      - name: Sign the app
+          # Save keychain password for later steps
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      # ── Configure Xcode for Developer ID signing ──
+      - name: Configure Xcode signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          PBXPROJ="studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
+
+          # Use perl for reliable in-place edits of the Runner target Release config
+          # Change CODE_SIGN_IDENTITY from "-" to Developer ID at project level for Release
+          # and set Manual style + team ID for the Runner target Release config
+          python3 << 'PYEOF'
+          import re, os
+
+          pbxproj = "studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
+          team_id = os.environ["APPLE_TEAM_ID"]
+
+          with open(pbxproj, "r") as f:
+              content = f.read()
+
+          # Find the Runner target Release config (33CC10FD2044A3C60003C045)
+          # and update its build settings
+          old = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "-";
+\t\t\t\tCODE_SIGN_STYLE = Automatic;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+
+          new = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
+\t\t\t\tCODE_SIGN_STYLE = Manual;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tDEVELOPMENT_TEAM = {team_id};
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+
+          if old in content:
+              content = content.replace(old, new)
+              print("✓ Updated Runner Release config with Developer ID signing")
+          else:
+              # Fallback: try the original format without ENABLE_HARDENED_RUNTIME
+              old2 = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_STYLE = Automatic;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;'''
+              new2 = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
+\t\t\t\tCODE_SIGN_STYLE = Manual;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tDEVELOPMENT_TEAM = {team_id};
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+              if old2 in content:
+                  content = content.replace(old2, new2)
+                  print("✓ Updated Runner Release config (fallback pattern)")
+              else:
+                  print("⚠ Could not find Runner Release config pattern — manual check needed")
+
+          with open(pbxproj, "w") as f:
+              f.write(content)
+          PYEOF
+
+      - name: Install Python dependencies
+        run: |
+          cd services
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install ".[inference]"
+          pip install pyinstaller
+
+      - name: Build services bundle
+        run: bash scripts/build/build_services.sh
+
+      # ── Build with Xcode signing the app + frameworks with Developer ID ──
+      - name: Build macOS app
+        run: bash scripts/build/build_macos.sh --skip-services
+
+      # ── Sign only the services binaries (added after Xcode build) ──
+      - name: Sign services binaries
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -88,7 +152,7 @@ jobs:
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
           ENTITLEMENTS="studiomc_app/macos/Runner/Release.entitlements"
 
-          # 1. Sign all Mach-O binaries in services bundle (not inside .framework)
+          # Sign all Mach-O binaries in the services bundle
           if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
             find "$APP_PATH/Contents/Resources/studiomc_services" -type f | while read -r f; do
               if file "$f" | grep -q "Mach-O"; then
@@ -97,28 +161,20 @@ jobs:
             done
           fi
 
-          # 2. Sign standalone dylibs outside .framework bundles
-          find "$APP_PATH/Contents" -name "*.dylib" -not -path "*.framework/*" \
-            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
-
-          # 3. Sign llama-server binaries if present
+          # Sign llama-server binaries if present
           if [ -d "$APP_PATH/Contents/Resources/bin" ]; then
-            find "$APP_PATH/Contents/Resources/bin" -type f -perm +111 \
-              -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
-          fi
-
-          # 4. Sign each .framework bundle as a whole (in Contents/Frameworks)
-          if [ -d "$APP_PATH/Contents/Frameworks" ]; then
-            find "$APP_PATH/Contents/Frameworks" -name "*.framework" -maxdepth 1 | while read -r fw; do
-              codesign --force --sign "$IDENTITY" --options runtime --timestamp "$fw"
+            find "$APP_PATH/Contents/Resources/bin" -type f | while read -r f; do
+              if file "$f" | grep -q "Mach-O"; then
+                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
+              fi
             done
           fi
 
-          # 5. Sign the main app bundle (without --deep)
+          # Re-sign the app bundle to cover the newly added services
           codesign --force --sign "$IDENTITY" --options runtime \
             --entitlements "$ENTITLEMENTS" --timestamp "$APP_PATH"
 
-          # Verify
+          # Verify entire bundle
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "✓ Code signing complete"
 
@@ -192,20 +248,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
 
-      - name: Install Python dependencies
-        run: |
-          cd services
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install ".[inference]"
-          pip install pyinstaller
-
-      - name: Build services bundle
-        run: bash scripts/build/build_services.sh
-
-      - name: Build macOS app
-        run: bash scripts/build/build_macos.sh --skip-services
-
+      # ── Import certificate BEFORE building ──
       - name: Import signing certificate
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -226,7 +269,75 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-      - name: Sign the app
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      # ── Configure Xcode for Developer ID signing ──
+      - name: Configure Xcode signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          PBXPROJ="studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
+
+          python3 << 'PYEOF'
+          import re, os
+
+          pbxproj = "studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
+          team_id = os.environ["APPLE_TEAM_ID"]
+
+          with open(pbxproj, "r") as f:
+              content = f.read()
+
+          old = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "-";
+\t\t\t\tCODE_SIGN_STYLE = Automatic;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+
+          new = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
+\t\t\t\tCODE_SIGN_STYLE = Manual;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tDEVELOPMENT_TEAM = {team_id};
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+
+          if old in content:
+              content = content.replace(old, new)
+              print("✓ Updated Runner Release config with Developer ID signing")
+          else:
+              old2 = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_STYLE = Automatic;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;'''
+              new2 = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
+\t\t\t\tCODE_SIGN_STYLE = Manual;
+\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
+\t\t\t\tDEVELOPMENT_TEAM = {team_id};
+\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
+              if old2 in content:
+                  content = content.replace(old2, new2)
+                  print("✓ Updated Runner Release config (fallback pattern)")
+              else:
+                  print("⚠ Could not find Runner Release config pattern — manual check needed")
+
+          with open(pbxproj, "w") as f:
+              f.write(content)
+          PYEOF
+
+      - name: Install Python dependencies
+        run: |
+          cd services
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install ".[inference]"
+          pip install pyinstaller
+
+      - name: Build services bundle
+        run: bash scripts/build/build_services.sh
+
+      - name: Build macOS app
+        run: bash scripts/build/build_macos.sh --skip-services
+
+      - name: Sign services binaries
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -234,7 +345,6 @@ jobs:
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
           ENTITLEMENTS="studiomc_app/macos/Runner/Release.entitlements"
 
-          # 1. Sign all Mach-O binaries in services bundle (not inside .framework)
           if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
             find "$APP_PATH/Contents/Resources/studiomc_services" -type f | while read -r f; do
               if file "$f" | grep -q "Mach-O"; then
@@ -243,28 +353,17 @@ jobs:
             done
           fi
 
-          # 2. Sign standalone dylibs outside .framework bundles
-          find "$APP_PATH/Contents" -name "*.dylib" -not -path "*.framework/*" \
-            -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
-
-          # 3. Sign llama-server binaries if present
           if [ -d "$APP_PATH/Contents/Resources/bin" ]; then
-            find "$APP_PATH/Contents/Resources/bin" -type f -perm +111 \
-              -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
-          fi
-
-          # 4. Sign each .framework bundle as a whole (in Contents/Frameworks)
-          if [ -d "$APP_PATH/Contents/Frameworks" ]; then
-            find "$APP_PATH/Contents/Frameworks" -name "*.framework" -maxdepth 1 | while read -r fw; do
-              codesign --force --sign "$IDENTITY" --options runtime --timestamp "$fw"
+            find "$APP_PATH/Contents/Resources/bin" -type f | while read -r f; do
+              if file "$f" | grep -q "Mach-O"; then
+                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
+              fi
             done
           fi
 
-          # 5. Sign the main app bundle (without --deep)
           codesign --force --sign "$IDENTITY" --options runtime \
             --entitlements "$ENTITLEMENTS" --timestamp "$APP_PATH"
 
-          # Verify
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "✓ Code signing complete"
 
