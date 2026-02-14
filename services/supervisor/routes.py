@@ -8,11 +8,14 @@ Endpoints for managing child services, querying hardware info, and global search
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import sys
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.database import Database
@@ -242,3 +245,89 @@ async def search(
     results = results[:limit]
 
     return SearchResponse(query=q, results=results, total=len(results))
+
+
+# ── API Key Management ───────────────────────────────────────────────
+
+
+def _hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+class CreateApiKeyRequest(BaseModel):
+    name: str = "Default"
+
+
+@router.post("/api-keys")
+async def create_api_key(req: CreateApiKeyRequest) -> dict:
+    """Generate a new API key for external tool access (Cursor, Claude Code, etc.)."""
+    db = await Database.instance()
+    raw_key = f"sk-studiomc-{secrets.token_urlsafe(32)}"
+    key_id = secrets.token_urlsafe(8)
+    prefix = raw_key[:20] + "..."
+
+    await db.execute(
+        "INSERT INTO api_keys (id, name, key_hash, prefix, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+        (key_id, req.name, _hash_key(raw_key), prefix),
+    )
+    await db.commit()
+
+    return {
+        "id": key_id,
+        "name": req.name,
+        "key": raw_key,
+        "prefix": prefix,
+        "message": "Save this key — it won't be shown again.",
+    }
+
+
+@router.get("/api-keys")
+async def list_api_keys() -> dict:
+    """List all API keys (shows prefix only, not the full key)."""
+    db = await Database.instance()
+    rows = await db.fetchall(
+        "SELECT id, name, prefix, created_at, last_used_at, revoked FROM api_keys ORDER BY created_at DESC"
+    )
+    keys = []
+    for row in rows:
+        keys.append({
+            "id": row["id"],
+            "name": row["name"],
+            "prefix": row["prefix"],
+            "created_at": row["created_at"],
+            "last_used_at": row["last_used_at"],
+            "revoked": bool(row["revoked"]),
+        })
+    return {"keys": keys}
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_api_key(key_id: str) -> dict:
+    """Revoke an API key."""
+    db = await Database.instance()
+    row = await db.fetchone("SELECT id FROM api_keys WHERE id = ?", (key_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Key not found")
+    await db.execute("UPDATE api_keys SET revoked = 1 WHERE id = ?", (key_id,))
+    await db.commit()
+    return {"status": "revoked", "id": key_id}
+
+
+@router.post("/api-keys/verify")
+async def verify_api_key(key: str = Query(..., description="The full API key to verify")) -> dict:
+    """Verify an API key is valid (used by inference middleware)."""
+    db = await Database.instance()
+    row = await db.fetchone(
+        "SELECT id, name, revoked FROM api_keys WHERE key_hash = ?",
+        (_hash_key(key),),
+    )
+    if not row:
+        return {"valid": False, "reason": "unknown_key"}
+    if row["revoked"]:
+        return {"valid": False, "reason": "revoked"}
+    await db.execute(
+        "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+        (row["id"],),
+    )
+    await db.commit()
+    return {"valid": True, "key_id": row["id"], "name": row["name"]}

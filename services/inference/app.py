@@ -29,10 +29,15 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
-from fastapi import FastAPI
+import hashlib
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from common.config import INFERENCE_PORT, ensure_dirs
+from common.database import Database
 
 from inference.engine import InferenceEngine
 from inference.router import InferenceRouter
@@ -82,6 +87,63 @@ async def lifespan(app: FastAPI):
     await inference_router.close()
 
 
+# ── Auth Middleware ────────────────────────────────────────────────────
+
+# Paths that never require auth (health, WebSocket from local Flutter app)
+_PUBLIC_PATHS = {"/health", "/v1/chat/stream"}
+
+
+class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
+    """Bearer-token auth for external tool access (Cursor, Claude Code, etc.).
+
+    Rules:
+    - Requests WITHOUT an Authorization header are allowed (local Flutter app).
+    - Requests WITH ``Authorization: Bearer sk-studiomc-...`` are verified
+      against the api_keys table.
+    - Health and WebSocket endpoints are always open.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        auth_header = request.headers.get("authorization", "")
+
+        # No auth header → local Flutter / browser request — pass through
+        if not auth_header:
+            return await call_next(request)
+
+        # Public endpoints
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Bearer token present → validate
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                try:
+                    db = await Database.instance()
+                    key_hash = hashlib.sha256(token.encode()).hexdigest()
+                    row = await db.fetchone(
+                        "SELECT id, revoked FROM api_keys WHERE key_hash = ?",
+                        (key_hash,),
+                    )
+                    if row and not row["revoked"]:
+                        # Valid key — update last_used_at and continue
+                        await db.execute(
+                            "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+                            (row["id"],),
+                        )
+                        await db.commit()
+                        return await call_next(request)
+                except Exception:
+                    logger.exception("API key verification error")
+
+            return JSONResponse(
+                status_code=401,
+                content={"error": {"message": "Invalid or revoked API key", "type": "auth_error"}},
+            )
+
+        return await call_next(request)
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -106,6 +168,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API key auth for external tools (Cursor, Claude Code, etc.)
+app.add_middleware(ApiKeyAuthMiddleware)
 
 # Mount routes
 app.include_router(router)

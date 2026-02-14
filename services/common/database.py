@@ -188,6 +188,16 @@ CREATE TABLE IF NOT EXISTS training_runs (
     FOREIGN KEY(adapter_id) REFERENCES adapters(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT 'Default',
+    key_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id);

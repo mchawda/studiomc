@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:convert';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/api_client.dart';
 import '../services/database_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/settings/advanced_settings_section.dart';
@@ -20,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _showAdvanced = false;
   bool _showPersonalization = false;
+  bool _showCodeSection = false;
   final TextEditingController _modelIdController = TextEditingController();
   final TextEditingController _newFactController = TextEditingController();
   bool _showApiKey = false;
@@ -27,6 +33,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const _keyApprovedFolders = 'settings_approved_folders';
   List<String> _approvedFolders = [];
   String _localApiKey = '';
+
+  /// API keys managed via the supervisor backend.
+  List<Map<String, dynamic>> _apiKeys = [];
+  bool _loadingKeys = false;
+  String? _newlyCreatedKey; // shown once after creation
 
   /// Permanent memory facts: [{id: int, fact: String, created_at: String}]
   List<Map<String, dynamic>> _facts = [];
@@ -90,6 +101,112 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveApprovedFolders() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_keyApprovedFolders, _approvedFolders);
+  }
+
+  // ── API Key management ──
+
+  Future<void> _loadApiKeys() async {
+    setState(() => _loadingKeys = true);
+    try {
+      final resp = await http
+          .get(Uri.parse('${ServiceUrls.supervisor}/api-keys'))
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        if (mounted) {
+          setState(() => _apiKeys =
+              List<Map<String, dynamic>>.from(data['keys'] ?? []));
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _loadingKeys = false);
+  }
+
+  Future<void> _createApiKey() async {
+    final nameCtrl = TextEditingController(text: 'My Key');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Create API Key',
+            style: GoogleFonts.spaceGrotesk(
+                fontSize: 14, fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: nameCtrl,
+          style: GoogleFonts.inter(fontSize: 11),
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: 'Key name',
+            hintText: 'e.g. Cursor, Claude Code',
+            isDense: true,
+            border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
+              child: const Text('Create')),
+        ],
+      ),
+    );
+
+    if (name == null || name.isEmpty) return;
+
+    try {
+      final resp = await http
+          .post(
+            Uri.parse('${ServiceUrls.supervisor}/api-keys'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'name': name}),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        setState(() => _newlyCreatedKey = data['key'] as String);
+        await _loadApiKeys();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed to create key: $e',
+              style: GoogleFonts.inter(fontSize: 10)),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    }
+  }
+
+  Future<void> _revokeApiKey(String id) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revoke API key?'),
+        content:
+            const Text('External tools using this key will lose access.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error),
+            child: const Text('Revoke'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await http
+          .delete(Uri.parse('${ServiceUrls.supervisor}/api-keys/$id'))
+          .timeout(const Duration(seconds: 5));
+      await _loadApiKeys();
+    } catch (_) {}
   }
 
   Future<void> _handleAddFolder() async {
@@ -341,6 +458,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 const SizedBox(height: 8),
 
+                // ── Code (API Keys) ──
+                _compactCard(
+                  theme,
+                  onTap: () {
+                    setState(
+                        () => _showCodeSection = !_showCodeSection);
+                    if (_showCodeSection && _apiKeys.isEmpty) {
+                      _loadApiKeys();
+                    }
+                  },
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Code',
+                                style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                            Text(
+                                'Use your local model with Cursor, Claude Code, etc.',
+                                style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    color: theme.colorScheme.secondary)),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        _showCodeSection
+                            ? Icons.keyboard_arrow_up
+                            : Icons.keyboard_arrow_down,
+                        size: 18,
+                        color: theme.colorScheme.secondary,
+                      ),
+                    ],
+                  ),
+                ),
+
+                if (_showCodeSection) ...[
+                  const SizedBox(height: 8),
+                  _buildCodeSection(theme),
+                ],
+
+                const SizedBox(height: 8),
+
                 // ── Advanced toggle ──
                 _compactCard(
                   theme,
@@ -419,6 +582,291 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 12),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Code / API Key section ──
+  Widget _buildCodeSection(ThemeData theme) {
+    return Card(
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Connection info
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primaryContainer.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Connection details',
+                      style: GoogleFonts.inter(
+                          fontSize: 10, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  _copyableRow(theme, 'Base URL', 'http://127.0.0.1:8100/v1'),
+                  const SizedBox(height: 4),
+                  _copyableRow(theme, 'Model', 'studiomc'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Newly created key banner
+            if (_newlyCreatedKey != null) ...[
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.check_circle,
+                            size: 14, color: Colors.green.shade700),
+                        const SizedBox(width: 6),
+                        Text('Key created — copy it now!',
+                            style: GoogleFonts.inter(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.green.shade800)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SelectableText(
+                            _newlyCreatedKey!,
+                            style: GoogleFonts.jetBrainsMono(
+                                fontSize: 9, color: Colors.green.shade900),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.copy, size: 14),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 24, minHeight: 24),
+                          onPressed: () {
+                            Clipboard.setData(
+                                ClipboardData(text: _newlyCreatedKey!));
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text('API key copied',
+                                  style: GoogleFonts.inter(fontSize: 10)),
+                              behavior: SnackBarBehavior.floating,
+                              duration: const Duration(seconds: 1),
+                            ));
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text("This key won't be shown again.",
+                        style: GoogleFonts.inter(
+                            fontSize: 9,
+                            fontStyle: FontStyle.italic,
+                            color: Colors.green.shade700)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+
+            // Key list
+            if (_loadingKeys)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                    child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 1.5))),
+              )
+            else if (_apiKeys.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text('No API keys yet. Create one to get started.',
+                    style: GoogleFonts.inter(
+                        fontSize: 10, color: theme.colorScheme.secondary)),
+              )
+            else
+              ..._apiKeys.map((k) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withOpacity(0.4),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      child: Row(
+                        children: [
+                          Icon(
+                            k['revoked'] == true
+                                ? Icons.block
+                                : Icons.vpn_key_outlined,
+                            size: 14,
+                            color: k['revoked'] == true
+                                ? theme.colorScheme.error
+                                : theme.colorScheme.primary.withOpacity(0.7),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(k['name'] ?? 'Unnamed',
+                                    style: GoogleFonts.inter(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                        decoration: k['revoked'] == true
+                                            ? TextDecoration.lineThrough
+                                            : null)),
+                                Text(k['prefix'] ?? '',
+                                    style: GoogleFonts.jetBrainsMono(
+                                        fontSize: 9,
+                                        color: theme.colorScheme.secondary)),
+                              ],
+                            ),
+                          ),
+                          if (k['revoked'] != true)
+                            IconButton(
+                              icon:
+                                  const Icon(Icons.delete_outline, size: 14),
+                              onPressed: () =>
+                                  _revokeApiKey(k['id'] as String),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 24, minHeight: 24),
+                              color: theme.colorScheme.error,
+                              tooltip: 'Revoke',
+                            ),
+                        ],
+                      ),
+                    ),
+                  )),
+
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 32,
+              child: FilledButton.icon(
+                onPressed: _createApiKey,
+                icon: const Icon(Icons.add, size: 14),
+                label: Text('Create API Key',
+                    style: GoogleFonts.inter(fontSize: 10)),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+            // Usage instructions
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest
+                    .withOpacity(0.3),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('How to use with external tools',
+                      style: GoogleFonts.inter(
+                          fontSize: 10, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  _instructionStep(theme, '1',
+                      'Create an API key above and copy it'),
+                  _instructionStep(theme, '2',
+                      'Set Base URL to  http://127.0.0.1:8100/v1'),
+                  _instructionStep(theme, '3',
+                      'Paste the key as your API key in Cursor / Claude Code'),
+                  _instructionStep(theme, '4',
+                      'Set model name to  studiomc  (or the loaded model id)'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _copyableRow(ThemeData theme, String label, String value) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 60,
+          child: Text(label,
+              style: GoogleFonts.inter(
+                  fontSize: 9, color: theme.colorScheme.secondary)),
+        ),
+        Expanded(
+          child: Text(value,
+              style: GoogleFonts.jetBrainsMono(fontSize: 10)),
+        ),
+        SizedBox(
+          width: 24,
+          height: 24,
+          child: IconButton(
+            icon: const Icon(Icons.copy, size: 12),
+            padding: EdgeInsets.zero,
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: value));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('Copied $label',
+                    style: GoogleFonts.inter(fontSize: 10)),
+                behavior: SnackBarBehavior.floating,
+                duration: const Duration(seconds: 1),
+              ));
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _instructionStep(ThemeData theme, String num, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 16,
+            height: 16,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(num,
+                style: GoogleFonts.inter(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.primary)),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(text,
+                style: GoogleFonts.inter(
+                    fontSize: 9, color: theme.colorScheme.onSurface)),
           ),
         ],
       ),
