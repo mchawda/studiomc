@@ -118,7 +118,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
+          APP_PATH="studiomc_app/build/macos/Build/Products/Release/Studiomc.app"
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
           ENTITLEMENTS="studiomc_app/macos/Runner/Release.entitlements"
 
@@ -281,7 +281,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          APP_PATH="studiomc_app/build/macos/Build/Products/Release/studiomc_app.app"
+          APP_PATH="studiomc_app/build/macos/Build/Products/Release/Studiomc.app"
           IDENTITY="Developer ID Application: Manish Chawda ($APPLE_TEAM_ID)"
           ENTITLEMENTS="studiomc_app/macos/Runner/Release.entitlements"
 
