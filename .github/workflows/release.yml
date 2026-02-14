@@ -77,56 +77,26 @@ jobs:
         run: |
           PBXPROJ="studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
 
-          # Use perl for reliable in-place edits of the Runner target Release config
-          # Change CODE_SIGN_IDENTITY from "-" to Developer ID at project level for Release
-          # and set Manual style + team ID for the Runner target Release config
-          python3 << 'PYEOF'
-          import re, os
+          # Patch the Runner target Release config for Developer ID signing
+          # Replace CODE_SIGN_IDENTITY = "-" with Developer ID Application
+          sed -i '' 's/CODE_SIGN_IDENTITY = "-";/CODE_SIGN_IDENTITY = "Developer ID Application";/' "$PBXPROJ"
 
-          pbxproj = "studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
-          team_id = os.environ["APPLE_TEAM_ID"]
+          # Replace CODE_SIGN_STYLE = Automatic with Manual (only in Release config section)
+          # The Release config for Runner target (33CC10FD) needs Manual for Developer ID
+          sed -i '' '/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements/,/name = Release/ {
+            s/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/
+          }' "$PBXPROJ"
 
-          with open(pbxproj, "r") as f:
-              content = f.read()
+          # Add DEVELOPMENT_TEAM after COMBINE_HIDPI_IMAGES in the Release config
+          sed -i '' "/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements/,/name = Release/ {
+            /COMBINE_HIDPI_IMAGES = YES/a\\
+            DEVELOPMENT_TEAM = $APPLE_TEAM_ID;
+          }" "$PBXPROJ"
 
-          # Find the Runner target Release config (33CC10FD2044A3C60003C045)
-          # and update its build settings
-          old = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
-\t\t\t\tCODE_SIGN_IDENTITY = "-";
-\t\t\t\tCODE_SIGN_STYLE = Automatic;
-\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
-
-          new = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
-\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
-\t\t\t\tCODE_SIGN_STYLE = Manual;
-\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tDEVELOPMENT_TEAM = {team_id};
-\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
-
-          if old in content:
-              content = content.replace(old, new)
-              print("✓ Updated Runner Release config with Developer ID signing")
-          else:
-              # Fallback: try the original format without ENABLE_HARDENED_RUNTIME
-              old2 = '''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
-\t\t\t\tCODE_SIGN_STYLE = Automatic;
-\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;'''
-              new2 = f'''CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
-\t\t\t\tCODE_SIGN_IDENTITY = "Developer ID Application";
-\t\t\t\tCODE_SIGN_STYLE = Manual;
-\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;
-\t\t\t\tDEVELOPMENT_TEAM = {team_id};
-\t\t\t\tENABLE_HARDENED_RUNTIME = YES;'''
-              if old2 in content:
-                  content = content.replace(old2, new2)
-                  print("✓ Updated Runner Release config (fallback pattern)")
-              else:
-                  print("⚠ Could not find Runner Release config pattern — manual check needed")
-
-          with open(pbxproj, "w") as f:
-              f.write(content)
-          PYEOF
+          # Verify changes
+          echo "Checking pbxproj for Developer ID..."
+          grep -A2 "Developer ID" "$PBXPROJ" || echo "Warning: Developer ID not found"
+          grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
       - name: Install Python dependencies
         run: |
