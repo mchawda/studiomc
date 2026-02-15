@@ -2,8 +2,10 @@
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
@@ -138,28 +140,63 @@ class _ModelsScreenState extends State<ModelsScreen> {
     _load();
   }
 
+  /// Models discovered via the bundled inference backend (Ollama + SpliceLLM).
+  List<Map<String, dynamic>> _backendModels = [];
+
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
       _error = null;
     });
 
+    // Try Ollama first
     try {
       final local = context.read<LocalInferenceService>();
       if (!local.available) {
         await local.init();
       }
-      if (!local.available) {
-        _error = 'Ollama not available. Install Ollama to manage models.';
+    } catch (_) {}
+
+    // Also probe the bundled inference backend (discovers Ollama + others)
+    try {
+      final bundled = context.read<BundledInferenceService>();
+      if (!bundled.available) {
+        await bundled.init();
       }
-    } catch (e) {
-      _error = 'Failed to connect to Ollama: $e';
+      if (bundled.available) {
+        await _loadBackendModels();
+      }
+    } catch (_) {}
+
+    // Only show error if NEITHER backend is available
+    final local = context.read<LocalInferenceService>();
+    final bundled = context.read<BundledInferenceService>();
+    if (!local.available && !bundled.available) {
+      _error = 'No inference backend available. Ensure the app services are running.';
     }
 
     // Load adapters in parallel
     await _loadAdapters();
 
     if (mounted) setState(() => _isLoading = false);
+  }
+
+  /// Fetch model list from the bundled inference service (/v1/models).
+  Future<void> _loadBackendModels() async {
+    try {
+      final resp = await http
+          .get(Uri.parse('http://127.0.0.1:8100/v1/models'))
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final models = data['data'] as List<dynamic>? ?? [];
+        if (mounted) {
+          setState(() {
+            _backendModels = models.cast<Map<String, dynamic>>();
+          });
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadAdapters() async {
@@ -207,17 +244,60 @@ class _ModelsScreenState extends State<ModelsScreen> {
     });
 
     try {
-      await for (final progress in local.pullModelWithProgress(tag)) {
-        if (!mounted) return;
-        setState(() => _downloadProgress[tag] = progress);
+      if (local.available) {
+        // Use Ollama directly
+        await for (final progress in local.pullModelWithProgress(tag)) {
+          if (!mounted) return;
+          setState(() => _downloadProgress[tag] = progress);
+        }
+      } else {
+        // Use model manager backend (port 8101) to add/download the model
+        final resp = await http.post(
+          Uri.parse('http://127.0.0.1:8101/models/add'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'source': 'hf',
+            'source_ref': tag,
+            'name': tag,
+          }),
+        ).timeout(const Duration(seconds: 10));
+
+        if (resp.statusCode == 200) {
+          // Poll download status
+          bool done = false;
+          while (!done && mounted) {
+            await Future.delayed(const Duration(seconds: 2));
+            try {
+              final statusResp = await http
+                  .get(Uri.parse(
+                      'http://127.0.0.1:8101/models/status/${Uri.encodeComponent(tag)}'))
+                  .timeout(const Duration(seconds: 5));
+              if (statusResp.statusCode == 200) {
+                final data = jsonDecode(statusResp.body);
+                final progress = (data['progress'] as num?)?.toDouble() ?? 0;
+                final status = data['status'] as String? ?? '';
+                setState(() => _downloadProgress[tag] = progress);
+                if (status == 'complete' || progress >= 1.0) done = true;
+                if (status == 'error') throw Exception('Download failed');
+              }
+            } catch (_) {
+              break;
+            }
+          }
+        } else {
+          throw Exception('Failed to start download');
+        }
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed for $tag')),
+          SnackBar(content: Text('Download failed for $tag: $e')),
         );
       }
     }
+
+    // Refresh model lists
+    await _loadBackendModels();
 
     if (mounted) {
       setState(() {
@@ -468,12 +548,20 @@ class _ModelsScreenState extends State<ModelsScreen> {
     }
 
     final local = context.watch<LocalInferenceService>();
+    final bundled = context.watch<BundledInferenceService>();
     final installed = local.models;
     final installedTags = _installedTags(local);
 
-    // Filter curated to only show uninstalled
+    // Also include backend model IDs in the installed set
+    final backendInstalledIds = _backendModels
+        .map((m) => (m['id'] as String? ?? '').toLowerCase())
+        .toSet();
+
+    // Filter curated to only show uninstalled (check both Ollama + backend)
     final available = _curatedModels
-        .where((c) => !_isInstalled(c.tag, installedTags))
+        .where((c) =>
+            !_isInstalled(c.tag, installedTags) &&
+            !backendInstalledIds.contains(c.tag.toLowerCase()))
         .toList();
 
     // Partition adapters: active first, then inactive
@@ -506,24 +594,43 @@ class _ModelsScreenState extends State<ModelsScreen> {
                       const SizedBox(height: 4),
                       Builder(builder: (ctx) {
                         final engine = ctx.watch<BundledInferenceService>();
+                        final ollama = ctx.watch<LocalInferenceService>();
+                        final hasOllama = ollama.available;
+                        final hasEngine = engine.available;
+
+                        String label;
+                        bool online;
+                        if (hasOllama && hasEngine) {
+                          label = 'Ollama + SpliceLLM';
+                          online = true;
+                        } else if (hasOllama) {
+                          label = 'Ollama';
+                          online = true;
+                        } else if (hasEngine) {
+                          label = 'SpliceLLM';
+                          online = true;
+                        } else if (engine.starting) {
+                          label = 'Starting engine...';
+                          online = false;
+                        } else {
+                          label = 'No backend available';
+                          online = false;
+                        }
+
                         return Row(
                           children: [
                             Icon(
-                              engine.available
+                              online
                                   ? Icons.circle
                                   : Icons.circle_outlined,
                               size: 8,
-                              color: engine.available
+                              color: online
                                   ? Colors.green
                                   : theme.colorScheme.secondary,
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              engine.available
-                                  ?                               'Ollama + SpliceLLM'
-                                  : engine.starting
-                                      ? 'Starting SpliceLLM...'
-                                      : 'Ollama only',
+                              label,
                               style: GoogleFonts.inter(
                                 fontSize: 10,
                                 color: theme.colorScheme.secondary,
@@ -611,13 +718,14 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
                   // ── Installed Models ──
                   _buildSectionHeader(theme, 'Installed',
-                      count: installed.length),
+                      count: installed.length + _backendModels.length),
                   const SizedBox(height: 4),
-                  if (installed.isEmpty)
+                  if (installed.isEmpty && _backendModels.isEmpty)
                     _buildEmpty(theme, Icons.download_outlined,
                         'No models installed',
                         subtitle: 'Download a model below')
-                  else
+                  else ...[
+                    // Ollama models
                     ...installed.map((model) => _InstalledModelCard(
                           model: model,
                           isActive: model.name == local.activeModel,
@@ -627,6 +735,21 @@ class _ModelsScreenState extends State<ModelsScreen> {
                           onDelete: () => _deleteModel(model),
                           adapterName: _activeAdapterForModel(model.name),
                         )),
+                    // Backend models (from inference service, not in Ollama)
+                    ..._backendModels
+                        .where((m) =>
+                            !installedTags.contains(m['id'] as String? ?? ''))
+                        .map((m) => _BackendModelCard(
+                              model: m,
+                              isActive:
+                                  (m['id'] as String?) == bundled.activeModel,
+                              onActivate: () async {
+                                final id = m['id'] as String? ?? '';
+                                await bundled.selectModel(id,
+                                    backend: m['backend'] as String?);
+                              },
+                            )),
+                  ],
 
                   const SizedBox(height: 10),
 
@@ -1388,6 +1511,100 @@ class _DiscoverCard extends StatelessWidget {
             fontWeight: FontWeight.w500,
             color: theme.colorScheme.secondary,
           )),
+    );
+  }
+}
+
+// ── Backend model card (non-Ollama models from inference service) ──
+
+class _BackendModelCard extends StatelessWidget {
+  final Map<String, dynamic> model;
+  final bool isActive;
+  final VoidCallback onActivate;
+
+  const _BackendModelCard({
+    required this.model,
+    required this.isActive,
+    required this.onActivate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name =
+        model['name'] as String? ?? model['id'] as String? ?? 'Unknown';
+    final backend = model['backend'] as String? ?? '';
+    final params = model['params_billion'];
+    final sizeBytes = model['size_bytes'] as int?;
+
+    String detail = backend;
+    if (params != null) detail = '${params}B · $detail';
+    if (sizeBytes != null && sizeBytes > 0) {
+      detail +=
+          ' · ${(sizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: isActive ? null : onActivate,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primary.withValues(alpha: 0.05)
+              : null,
+          border: Border(
+            bottom: BorderSide(color: theme.dividerColor, width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.smart_toy_outlined,
+                size: 14,
+                color: isActive
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.secondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight:
+                            isActive ? FontWeight.w500 : FontWeight.w400,
+                        color: theme.colorScheme.onSurface,
+                      )),
+                  if (detail.isNotEmpty)
+                    Text(detail,
+                        style: GoogleFonts.inter(
+                          fontSize: 9,
+                          color: theme.colorScheme.secondary,
+                        )),
+                ],
+              ),
+            ),
+            if (isActive)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text('Active',
+                    style: GoogleFonts.inter(
+                      fontSize: 8,
+                      fontWeight: FontWeight.w500,
+                      color: theme.colorScheme.primary,
+                    )),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
