@@ -496,9 +496,11 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    // Routing: prefer Ollama for small models, SpliceLLM for large
-    final useOllama = localInference.available;
+    // Routing: always go through the bundled inference router (port 8100)
+    // which handles backend fallback automatically (Ollama → llamacpp → SpliceLLM).
+    // Only fall back to direct Ollama if the bundled service is completely down.
     final useStudiomc = bundledInference.available;
+    final useOllama = !useStudiomc && localInference.available;
     if (!useOllama && !useStudiomc) {
       setState(() {
         _error = 'No inference engine available. Download a model first.';
@@ -602,15 +604,19 @@ class _ChatScreenState extends State<ChatScreen> {
       final buffer = StringBuffer();
       int tokenCount = 0;
 
-      // ── Routing: Ollama for models that fit in memory, SpliceLLM only
-      //    for models that exceed GPU/RAM capacity. ──
+      // ── Routing: always prefer the bundled inference router (port 8100).
+      //    It handles Ollama → llamacpp → SpliceLLM fallback automatically.
+      //    Direct Ollama is only used if the bundled service is down. ──
       var usingStudiomcFallback = false;
       int ollamaRetries = 0;
       const maxOllamaRetries = 2;
       final modelFits = localInference.activeModelFitsInMemory;
 
       Stream<String> tokenStream;
-      if (useOllama) {
+      if (useStudiomc) {
+        tokenStream = bundledInference.streamChat(messages: messagesPayload);
+        usingStudiomcFallback = true;
+      } else if (useOllama) {
         tokenStream = localInference.streamChat(messages: messagesPayload);
       } else {
         tokenStream = bundledInference.streamChat(messages: messagesPayload);
@@ -670,27 +676,22 @@ class _ChatScreenState extends State<ChatScreen> {
 
       _streamSub = tokenStream.listen(
         (token) {
-          // Detect Ollama error tokens
-          if (!usingStudiomcFallback && token.startsWith('[Error')) {
-            _streamSub?.cancel();
-            debugPrint('[chat] Ollama error: $token');
-
-            // If model fits in memory → retry Ollama (it's probably loading)
-            // If model is too large → fall back to SpliceLLM
-            if (modelFits) {
+          // Detect error tokens from any backend
+          if (token.startsWith('[Error')) {
+            if (!usingStudiomcFallback) {
+              // Direct Ollama path failed — try bundled service fallback
+              _streamSub?.cancel();
+              debugPrint('[chat] Direct Ollama error: $token');
               if (ollamaRetries < maxOllamaRetries) {
                 retryOllama();
               } else {
-                // Exhausted retries — show error, don't use SpliceLLM for small models
-                debugPrint('[chat] Ollama retries exhausted for small model');
-                _onStreamError('Ollama is not responding. Check that it\'s running.', assistantMsgId);
+                fallbackToSplice();
               }
-            } else if (useStudiomc) {
-              // Model too large for GPU → SpliceLLM is appropriate
-              fallbackToSplice();
-            } else {
-              _onStreamError('Model may be too large. No fallback available.', assistantMsgId);
+              return;
             }
+            // Error from bundled service means all backends failed
+            debugPrint('[chat] All backends failed: $token');
+            _onStreamError('Could not generate response. Check that a model is downloaded.', assistantMsgId);
             return;
           }
 

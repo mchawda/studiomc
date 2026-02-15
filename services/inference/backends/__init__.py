@@ -6,7 +6,8 @@
 Provides a unified interface for multiple LLM inference backends:
     - Ollama       (local, REST API at localhost:11434)
     - LM Studio    (local, OpenAI-compatible at localhost:1234)
-    - Studiomc     (built-in SpliceLLM engine)
+    - LlamaCpp     (built-in, runs GGUF models via llama-cpp-python)
+    - Studiomc     (built-in SpliceLLM engine, safetensors models)
     - Frontier     (cloud, any OpenAI-compatible API)
 
 Each backend implements the :class:`BackendClient` abstract base class.
@@ -126,6 +127,7 @@ from inference.backends.ollama import OllamaClient
 from inference.backends.lmstudio import LMStudioClient
 from inference.backends.studiomc import StudiomcClient
 from inference.backends.frontier import FrontierClient
+from inference.backends.llamacpp import LlamaCppClient
 
 __all__ = [
     # Data classes
@@ -141,5 +143,6 @@ __all__ = [
     "OllamaClient",
     "LMStudioClient",
     "StudiomcClient",
+    "LlamaCppClient",
     "FrontierClient",
 ]

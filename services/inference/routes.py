@@ -225,31 +225,41 @@ async def select_model(req: ModelSelectRequest) -> dict[str, Any]:
     ir = get_router()
 
     try:
-        # For SpliceLLM (studiomc backend) models, also check the DB and load via the engine
-        if req.backend == "studiomc" or (
-            not req.backend and not any(
+        # For local models (not prefixed with a known external backend),
+        # look up the model in the DB and resolve its filesystem path.
+        if not req.backend or req.backend in ("studiomc", "llamacpp"):
+            if not any(
                 req.model_id.startswith(p)
                 for p in ("ollama/", "lmstudio/", "frontier:")
-            )
-        ):
-            # Try loading from DB for Studiomc engine
-            try:
-                db = await Database.instance()
-                row = await db.fetchone(
-                    "SELECT id, name, source_ref FROM models WHERE id = ?",
-                    (req.model_id,),
-                )
-                if row:
-                    model_path = row["source_ref"] or req.model_id
-                    await ir.engine.load_model(req.model_id, model_path)
-                    # Update last_used_at
-                    await db.execute(
-                        "UPDATE models SET last_used_at = datetime('now') WHERE id = ?",
+            ):
+                try:
+                    from common.config import MODELS_DIR
+
+                    db = await Database.instance()
+                    row = await db.fetchone(
+                        "SELECT id, name, source_ref FROM models WHERE id = ?",
                         (req.model_id,),
                     )
-                    await db.commit()
-            except Exception:
-                logger.debug("DB lookup for model %s skipped", req.model_id)
+                    if row:
+                        # Check if a GGUF file exists for this model → use llamacpp
+                        model_dir = MODELS_DIR / req.model_id
+                        gguf_files = list(model_dir.glob("*.gguf")) if model_dir.is_dir() else []
+                        if gguf_files:
+                            # Route to llamacpp backend
+                            req.backend = "llamacpp"
+                        else:
+                            # Fallback to SpliceLLM for safetensors
+                            model_path = row["source_ref"] or req.model_id
+                            await ir.engine.load_model(req.model_id, model_path)
+
+                        # Update last_used_at
+                        await db.execute(
+                            "UPDATE models SET last_used_at = datetime('now') WHERE id = ?",
+                            (req.model_id,),
+                        )
+                        await db.commit()
+                except Exception:
+                    logger.debug("DB lookup for model %s skipped", req.model_id)
 
         result = await ir.select_model(req.model_id, backend=req.backend)
 

@@ -49,6 +49,7 @@ hidden_imports = [
     # Service internals that routes/app files may lazy-import
     "inference.routes",
     "inference.streaming",
+    "inference.backends.llamacpp",
     "model_manager.routes",
     "model_manager.autopilot",
     "documents.routes",
@@ -73,6 +74,10 @@ hidden_imports = [
     "aiosqlite",
     "httpx",
     "platformdirs",
+    # llama.cpp GGUF inference engine
+    "llama_cpp",
+    "llama_cpp.llama",
+    "llama_cpp.llama_cpp",
 ]
 
 # ── Data files ─────────────────────────────────────────────────────────────

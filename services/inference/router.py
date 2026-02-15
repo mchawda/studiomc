@@ -6,15 +6,16 @@
 Supported backends (in priority order):
     1. Ollama       (localhost:11434)  — preferred local runtime
     2. LM Studio    (localhost:1234)   — preferred local runtime
-    3. Studiomc     (built-in)        — SpliceLLM engine
-    4. Frontier API (cloud, optional) — OpenAI / Anthropic / any OpenAI-compatible
+    3. LlamaCpp     (built-in)        — runs GGUF models directly via llama-cpp-python
+    4. Studiomc     (built-in)        — SpliceLLM engine (safetensors)
+    5. Frontier API (cloud, optional) — OpenAI / Anthropic / any OpenAI-compatible
 
 The router auto-detects local backends on startup and merges their model
 lists into a single unified catalog for the UI.
 
 Routing rules:
     - Local backends always preferred over cloud
-    - If same model is available on multiple backends: Ollama > LM Studio > SpliceLLM
+    - If same model is available on multiple backends: Ollama > LM Studio > LlamaCpp > SpliceLLM
     - Frontier APIs are only used when the user explicitly selects a cloud model
     - All cloud requests require a user consent flag
 
@@ -49,6 +50,7 @@ from inference.backends import (
     OllamaClient,
     LMStudioClient,
     StudiomcClient,
+    LlamaCppClient,
     FrontierClient,
 )
 from inference.core.loader import safe_switch, SwitchResult
@@ -80,7 +82,7 @@ class InferenceRouter:
 
     # Backend priority order (first online backend with the model wins).
     # Local backends always come before cloud.
-    BACKEND_PRIORITY = ["ollama", "lmstudio", "studiomc"]
+    BACKEND_PRIORITY = ["ollama", "lmstudio", "llamacpp", "studiomc"]
 
     def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
@@ -102,6 +104,7 @@ class InferenceRouter:
         # Always register the built-in backends
         self._backends["ollama"] = OllamaClient()
         self._backends["lmstudio"] = LMStudioClient()
+        self._backends["llamacpp"] = LlamaCppClient()
         self._backends["studiomc"] = StudiomcClient(engine)
 
     # ── Properties ────────────────────────────────────────────────────
@@ -302,6 +305,17 @@ class InferenceRouter:
                 self._active_model_id = model_id
                 self._active_backend_model_id = backend_model_id
 
+                # For llamacpp backend, load the GGUF model directly
+                if resolved_backend == "llamacpp" and isinstance(
+                    client, LlamaCppClient
+                ):
+                    loaded = await client.load_model(backend_model_id)
+                    if not loaded:
+                        logger.warning(
+                            "llamacpp model load failed for %s",
+                            backend_model_id,
+                        )
+
                 # For SpliceLLM (studiomc backend), use safe_switch
                 if resolved_backend == "studiomc" and isinstance(
                     client, StudiomcClient
@@ -388,7 +402,25 @@ class InferenceRouter:
                 except Exception:
                     pass
 
-            # Fallback: use Studiomc engine (always-on)
+            # Fallback: try llamacpp first (can load GGUF directly)
+            llamacpp_client = self._backends.get("llamacpp")
+            if isinstance(llamacpp_client, LlamaCppClient):
+                loaded = await llamacpp_client.load_model(model_id)
+                if loaded:
+                    self._active_backend = llamacpp_client
+                    self._active_backend_name = "llamacpp"
+                    self._active_model_id = model_id
+                    self._active_backend_model_id = model_id
+                    logger.info(
+                        "Loaded model %s via llamacpp fallback", model_id
+                    )
+                    return {
+                        "model_id": model_id,
+                        "backend": "llamacpp",
+                        "backend_model_id": model_id,
+                    }
+
+            # Last resort: SpliceLLM engine (safetensors only)
             studiomc_client = self._backends.get("studiomc")
             if isinstance(studiomc_client, StudiomcClient):
                 self._active_backend = studiomc_client
@@ -537,18 +569,35 @@ class InferenceRouter:
                     await asyncio.sleep(0.5)  # brief pause before retry
                     continue
 
-                # All retries exhausted — try SpliceLLM fallback
+                # All retries exhausted — try llamacpp fallback, then SpliceLLM
+                model_id = self._active_backend_model_id or "unknown"
+
+                if self._active_backend_name not in ("llamacpp", "studiomc"):
+                    # Try llamacpp first (handles GGUF models)
+                    llamacpp = self._backends.get("llamacpp")
+                    if isinstance(llamacpp, LlamaCppClient):
+                        try:
+                            loaded = await llamacpp.load_model(model_id)
+                            if loaded:
+                                logger.info("Falling back to llamacpp for %s", model_id)
+                                async for token, m in llamacpp.generate_stream(
+                                    model_id, messages, **kwargs
+                                ):
+                                    yield token, m
+                                return
+                        except Exception as lcpp_err:
+                            logger.debug("llamacpp fallback failed: %s", lcpp_err)
+
                 if self._active_backend_name != "studiomc":
                     logger.warning(
                         "Backend %s failed after %d attempts for model %s: %s — falling back to SpliceLLM",
                         self._active_backend_name,
                         _MAX_RETRIES + 1,
-                        self._active_backend_model_id,
+                        model_id,
                         primary_err,
                     )
                     studiomc = self._backends.get("studiomc")
                     if studiomc is not None:
-                        model_id = self._active_backend_model_id or "unknown"
                         try:
                             if isinstance(studiomc, StudiomcClient):
                                 result = await self._safe_load_studiomc(model_id, model_id)
@@ -559,7 +608,6 @@ class InferenceRouter:
                                 "SpliceLLM could not load model %s: %s",
                                 model_id, load_err,
                             )
-                            # Final fallback: yield error message instead of crashing
                             yield (
                                 f"[Error: All backends failed. "
                                 f"Primary: {primary_err}. Fallback: {load_err}]"

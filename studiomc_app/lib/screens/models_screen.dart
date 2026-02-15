@@ -42,20 +42,23 @@ class _ModelsScreenState extends State<ModelsScreen> {
       params: '3B',
       description: 'Meta\'s latest compact model. Great all-rounder.',
       sizeEstimate: '2.0 GB',
+      hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'llama3.2:1b',
       name: 'Llama 3.2 1B',
       params: '1B',
       description: 'Ultra-light Llama for fast responses.',
-      sizeEstimate: '1.3 GB',
+      sizeEstimate: '780 MB',
+      hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'llama3.1:8b',
       name: 'Llama 3.1 8B',
       params: '8B',
       description: 'Larger Llama with strong reasoning.',
-      sizeEstimate: '4.7 GB',
+      sizeEstimate: '4.9 GB',
+      hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'qwen3:4b',
@@ -63,27 +66,31 @@ class _ModelsScreenState extends State<ModelsScreen> {
       params: '4B',
       description: 'Alibaba\'s fast multilingual model.',
       sizeEstimate: '2.6 GB',
+      hfRepo: 'bartowski/Qwen2.5-3B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'qwen2.5:7b',
       name: 'Qwen 2.5 7B',
       params: '7B',
       description: 'Strong coding and reasoning model.',
-      sizeEstimate: '4.4 GB',
+      sizeEstimate: '4.7 GB',
+      hfRepo: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'mistral',
       name: 'Mistral 7B',
       params: '7B',
       description: 'Efficient general-purpose model from Mistral AI.',
-      sizeEstimate: '4.1 GB',
+      sizeEstimate: '4.4 GB',
+      hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     ),
     _CuratedEntry(
       tag: 'phi3',
       name: 'Phi-3 Mini',
       params: '3.8B',
       description: 'Microsoft\'s small but capable model.',
-      sizeEstimate: '2.3 GB',
+      sizeEstimate: '2.4 GB',
+      hfRepo: 'bartowski/Phi-3.5-mini-instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'gemma2:2b',
@@ -91,6 +98,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
       params: '2B',
       description: 'Google\'s lightweight open model.',
       sizeEstimate: '1.6 GB',
+      hfRepo: 'bartowski/gemma-2-2b-it-GGUF',
     ),
     _CuratedEntry(
       tag: 'deepseek-coder:6.7b',
@@ -98,39 +106,44 @@ class _ModelsScreenState extends State<ModelsScreen> {
       params: '6.7B',
       description: 'Specialized for code generation.',
       sizeEstimate: '3.8 GB',
+      hfRepo: 'bartowski/deepseek-coder-6.7b-instruct-GGUF',
     ),
-    // ── Large models (run via SpliceLLM) ──
+    // ── Large models (run via SpliceLLM / llamacpp) ──
     _CuratedEntry(
       tag: 'llama3.1:70b',
       name: 'Llama 3.1 70B',
       params: '70B',
-      description: 'Full-size Llama. Uses SpliceLLM streaming for low-RAM machines.',
+      description: 'Full-size Llama. Streams from disk on low-RAM machines.',
       sizeEstimate: '40 GB',
       isLargeModel: true,
+      hfRepo: 'bartowski/Meta-Llama-3.1-70B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'qwen2.5:72b',
       name: 'Qwen 2.5 72B',
       params: '72B',
-      description: 'Large multilingual model. Streams from disk via SpliceLLM.',
+      description: 'Large multilingual model. Streams from disk.',
       sizeEstimate: '41 GB',
       isLargeModel: true,
+      hfRepo: 'bartowski/Qwen2.5-72B-Instruct-GGUF',
     ),
     _CuratedEntry(
       tag: 'deepseek-r1:70b',
       name: 'DeepSeek R1 70B',
       params: '70B',
-      description: 'Reasoning-focused large model. SpliceLLM inference.',
+      description: 'Reasoning-focused large model.',
       sizeEstimate: '42 GB',
       isLargeModel: true,
+      hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     ),
     _CuratedEntry(
       tag: 'mixtral:8x7b',
       name: 'Mixtral 8x7B',
       params: '47B MoE',
-      description: 'Mixture-of-experts model. Fast via SpliceLLM.',
+      description: 'Mixture-of-experts model.',
       sizeEstimate: '26 GB',
       isLargeModel: true,
+      hfRepo: 'bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF',
     ),
   ];
 
@@ -251,18 +264,26 @@ class _ModelsScreenState extends State<ModelsScreen> {
           setState(() => _downloadProgress[tag] = progress);
         }
       } else {
-        // Use model manager backend (port 8101) to add/download the model
+        // Use model manager backend (port 8101) to download GGUF from HuggingFace.
+        // Find the HF repo for this curated model, or use the tag as fallback.
+        final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
+        final hfRepo = curated?.hfRepo ?? tag;
+        final modelName = curated?.name ?? tag;
+
         final resp = await http.post(
           Uri.parse('http://127.0.0.1:8101/models/add'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'source': 'hf',
-            'source_ref': tag,
-            'name': tag,
+            'source_ref': hfRepo,
+            'name': modelName,
           }),
         ).timeout(const Duration(seconds: 10));
 
         if (resp.statusCode == 200) {
+          final addData = jsonDecode(resp.body);
+          final modelId = addData['id'] as String? ?? tag;
+
           // Poll download status
           bool done = false;
           while (!done && mounted) {
@@ -270,7 +291,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
             try {
               final statusResp = await http
                   .get(Uri.parse(
-                      'http://127.0.0.1:8101/models/status/${Uri.encodeComponent(tag)}'))
+                      'http://127.0.0.1:8101/models/status/${Uri.encodeComponent(modelId)}'))
                   .timeout(const Duration(seconds: 5));
               if (statusResp.statusCode == 200) {
                 final data = jsonDecode(statusResp.body);
@@ -883,6 +904,9 @@ class _CuratedEntry {
   final String sizeEstimate;
   final bool isLargeModel;
 
+  /// HuggingFace repo for downloading without Ollama (GGUF format).
+  final String? hfRepo;
+
   const _CuratedEntry({
     required this.tag,
     required this.name,
@@ -890,6 +914,7 @@ class _CuratedEntry {
     required this.description,
     required this.sizeEstimate,
     this.isLargeModel = false,
+    this.hfRepo,
   });
 }
 

@@ -99,6 +99,8 @@ jobs:
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
       - name: Install Python dependencies
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=on"
         run: |
           cd services
           python -m venv .venv
@@ -264,6 +266,8 @@ jobs:
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
       - name: Install Python dependencies
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=on"
         run: |
           cd services
           python -m venv .venv
