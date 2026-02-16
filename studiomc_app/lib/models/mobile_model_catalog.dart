@@ -18,7 +18,7 @@ class MobileModelCatalog {
       parameterCount: '0.5B',
       quantization: 'Q4_K_M',
       minRamMb: 2048,
-      recommended: false,
+      recommended: true,
     ),
     CatalogModel(
       id: 'llama-3.2-1b',
@@ -31,7 +31,7 @@ class MobileModelCatalog {
       parameterCount: '1B',
       quantization: 'Q4_K_M',
       minRamMb: 3072,
-      recommended: true,
+      recommended: false,
     ),
     CatalogModel(
       id: 'llama-3.2-3b',

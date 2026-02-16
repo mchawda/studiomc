@@ -3,6 +3,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
@@ -46,6 +47,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Meta\'s latest compact model. Great all-rounder.',
       sizeEstimate: '2.0 GB',
       hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+      ggufFilename: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'llama3.2:1b',
@@ -54,6 +57,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Ultra-light Llama for fast responses.',
       sizeEstimate: '780 MB',
       hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+      ggufFilename: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'llama3.1:8b',
@@ -62,6 +67,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Larger Llama with strong reasoning.',
       sizeEstimate: '4.9 GB',
       hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+      ggufFilename: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'qwen3:4b',
@@ -70,6 +77,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Alibaba\'s fast multilingual model.',
       sizeEstimate: '2.6 GB',
       hfRepo: 'bartowski/Qwen2.5-3B-Instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf',
+      ggufFilename: 'Qwen2.5-3B-Instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'qwen2.5:7b',
@@ -78,6 +87,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Strong coding and reasoning model.',
       sizeEstimate: '4.7 GB',
       hfRepo: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+      ggufFilename: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'mistral',
@@ -86,6 +97,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Efficient general-purpose model from Mistral AI.',
       sizeEstimate: '4.4 GB',
       hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
+      ggufFilename: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'phi3',
@@ -94,6 +107,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Microsoft\'s small but capable model.',
       sizeEstimate: '2.4 GB',
       hfRepo: 'bartowski/Phi-3.5-mini-instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf',
+      ggufFilename: 'Phi-3.5-mini-instruct-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'gemma2:2b',
@@ -102,6 +117,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Google\'s lightweight open model.',
       sizeEstimate: '1.6 GB',
       hfRepo: 'bartowski/gemma-2-2b-it-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
+      ggufFilename: 'gemma-2-2b-it-Q4_K_M.gguf',
     ),
     _CuratedEntry(
       tag: 'deepseek-coder:6.7b',
@@ -110,6 +127,8 @@ class _ModelsScreenState extends State<ModelsScreen> {
       description: 'Specialized for code generation.',
       sizeEstimate: '3.8 GB',
       hfRepo: 'bartowski/deepseek-coder-6.7b-instruct-GGUF',
+      downloadUrl: 'https://huggingface.co/bartowski/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct-Q4_K_M.gguf',
+      ggufFilename: 'deepseek-coder-6.7b-instruct-Q4_K_M.gguf',
     ),
     // ── Large models (run via SpliceLLM / llamacpp) ──
     _CuratedEntry(
@@ -193,7 +212,17 @@ class _ModelsScreenState extends State<ModelsScreen> {
       final local = context.read<LocalInferenceService>();
       final bundled = context.read<BundledInferenceService>();
       if (!local.available && !bundled.available) {
-        _error = 'No inference backend available. Ensure the app services are running.';
+        // Backend may still be starting — wait briefly before showing error
+        for (int i = 0; i < 5; i++) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (bundled.available || local.available) break;
+        }
+        if (!local.available && !bundled.available) {
+          _error = 'Backend still starting. You can still download models below.';
+        }
+        if (bundled.available) {
+          await _loadBackendModels();
+        }
       }
 
       await _loadAdapters();
@@ -253,11 +282,21 @@ class _ModelsScreenState extends State<ModelsScreen> {
     final base = tag.split(':').first;
     // "llama3.2" matches "llama3.2:latest"
     if (installed.contains('$base:latest')) return true;
+
+    // Also check if the GGUF file exists locally
+    final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
+    if (curated?.ggufFilename != null) {
+      final file = File('$studiomcModelsDir/${curated!.ggufFilename}');
+      if (file.existsSync() && file.lengthSync() > 0) return true;
+    }
+
     return false;
   }
 
   Future<void> _downloadModel(String tag) async {
     final local = context.read<LocalInferenceService>();
+    final bundled = context.read<BundledInferenceService>();
+    final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
 
     setState(() {
       _downloading[tag] = true;
@@ -266,15 +305,30 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
     try {
       if (local.available) {
-        // Use Ollama directly
+        // Path 1: Use Ollama directly
         await for (final progress in local.pullModelWithProgress(tag)) {
           if (!mounted) return;
           setState(() => _downloadProgress[tag] = progress);
         }
+      } else if (curated?.downloadUrl != null && curated?.ggufFilename != null) {
+        // Path 2: Direct GGUF download from HuggingFace (no Ollama needed)
+        await _downloadGgufDirect(
+          tag: tag,
+          url: curated!.downloadUrl!,
+          filename: curated.ggufFilename!,
+        );
+
+        // Tell the inference backend to select this model
+        if (bundled.available) {
+          final modelId = curated.ggufFilename!
+              .replaceAll('.gguf', '')
+              .replaceAll('.bin', '')
+              .toLowerCase()
+              .replaceAll(' ', '-');
+          await bundled.selectModel(modelId);
+        }
       } else {
-        // Use model manager backend (port 8101) to download GGUF from HuggingFace.
-        // Find the HF repo for this curated model, or use the tag as fallback.
-        final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
+        // Path 3: Model manager backend (port 8101) for large or unknown models
         final hfRepo = curated?.hfRepo ?? tag;
         final modelName = curated?.name ?? tag;
 
@@ -292,7 +346,6 @@ class _ModelsScreenState extends State<ModelsScreen> {
           final addData = jsonDecode(resp.body);
           final modelId = addData['id'] as String? ?? tag;
 
-          // Poll download status
           bool done = false;
           while (!done && mounted) {
             await Future.delayed(const Duration(seconds: 2));
@@ -333,6 +386,63 @@ class _ModelsScreenState extends State<ModelsScreen> {
         _downloading.remove(tag);
         _downloadProgress.remove(tag);
       });
+    }
+  }
+
+  /// Download a GGUF file directly from HuggingFace to the shared models dir.
+  Future<void> _downloadGgufDirect({
+    required String tag,
+    required String url,
+    required String filename,
+  }) async {
+    final modelsDir = Directory(studiomcModelsDir);
+    if (!modelsDir.existsSync()) {
+      modelsDir.createSync(recursive: true);
+    }
+
+    final filePath = '${modelsDir.path}/$filename';
+    final file = File(filePath);
+
+    // Skip if already downloaded
+    if (file.existsSync() && file.lengthSync() > 0) {
+      debugPrint('[discover] Model already exists at $filePath');
+      if (mounted) setState(() => _downloadProgress[tag] = 1.0);
+      return;
+    }
+
+    debugPrint('[discover] Downloading $url -> $filePath');
+
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+
+      final totalBytes = response.contentLength;
+      int receivedBytes = 0;
+
+      final sink = file.openWrite();
+      await for (final chunk in response) {
+        sink.add(chunk);
+        receivedBytes += chunk.length;
+        if (totalBytes > 0 && mounted) {
+          setState(() =>
+              _downloadProgress[tag] = receivedBytes / totalBytes);
+        }
+      }
+      await sink.flush();
+      await sink.close();
+
+      debugPrint('[discover] Download complete: $filePath (${receivedBytes} bytes)');
+    } catch (e) {
+      // Clean up partial file
+      if (file.existsSync()) file.deleteSync();
+      rethrow;
+    } finally {
+      client.close();
     }
   }
 
@@ -970,15 +1080,30 @@ class _ModelsScreenState extends State<ModelsScreen> {
     );
   }
 
-  void _activateMobileModel(String filename) {
+  void _activateMobileModel(String filename) async {
     final mobile = context.read<MobileInferenceService>();
     final settings = context.read<SettingsService>();
-    mobile.loadModel(filename);
+    final success = await mobile.loadModel(filename);
+
+    if (!mounted) return;
+
+    if (!success) {
+      final error = mobile.downloadError ?? 'Failed to load model';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
     settings.activeModelId = filename;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Switching to ${mobile.humanName(filename)}'),
+        content: Text('Switched to ${mobile.humanName(filename)}'),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         duration: const Duration(seconds: 2),
@@ -1155,6 +1280,12 @@ class _CuratedEntry {
   /// HuggingFace repo for downloading without Ollama (GGUF format).
   final String? hfRepo;
 
+  /// Direct download URL for GGUF file (fallback when Ollama is unavailable).
+  final String? downloadUrl;
+
+  /// GGUF filename for direct download.
+  final String? ggufFilename;
+
   const _CuratedEntry({
     required this.tag,
     required this.name,
@@ -1163,6 +1294,8 @@ class _CuratedEntry {
     required this.sizeEstimate,
     this.isLargeModel = false,
     this.hfRepo,
+    this.downloadUrl,
+    this.ggufFilename,
   });
 }
 

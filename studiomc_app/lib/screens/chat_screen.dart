@@ -198,8 +198,18 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mobileInference.available && mobileInference.activeModel != null) {
           _modelName = mobileInference.humanName(mobileInference.activeModel!);
         } else if (mobileInference.downloadedModels.isNotEmpty) {
-          _modelName = mobileInference.humanName(
-              mobileInference.downloadedModels.first.filename);
+          // Model downloaded but not loaded — auto-load it
+          final preferred = settings.hasActiveModel
+              ? settings.activeModelId!
+              : mobileInference.downloadedModels.first.filename;
+          await mobileInference.loadModel(preferred);
+          if (mobileInference.available && mobileInference.activeModel != null) {
+            _modelName =
+                mobileInference.humanName(mobileInference.activeModel!);
+          } else {
+            _modelName = mobileInference
+                .humanName(mobileInference.downloadedModels.first.filename);
+          }
         } else {
           _modelName = 'No model';
         }

@@ -14,8 +14,10 @@ import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
+import 'package:studiomc_app/services/mobile_inference_service.dart';
 import 'package:studiomc_app/services/training_service.dart';
 import 'package:studiomc_app/widgets/chat/memory_toggle.dart';
+import 'package:studiomc_app/utils/platform_utils.dart';
 
 /// Perplexity-style floating input bar.
 /// Rounded pill, attach + memory + model selector inside, send button on right.
@@ -129,6 +131,36 @@ class _ChatInputState extends State<ChatInput> {
   Future<void> _loadModels() async {
     setState(() => _modelsLoading = true);
     try {
+      // ── Mobile: list downloaded on-device models ──
+      if (isMobile) {
+        final mobileInference = context.read<MobileInferenceService>();
+        if (mounted) {
+          setState(() {
+            _models = mobileInference.downloadedModels
+                .map((m) => <String, dynamic>{
+                      'id': m.filename,
+                      'name': mobileInference.humanName(m.filename),
+                    })
+                .toList();
+            _modelsLoading = false;
+            if (_models.isNotEmpty) {
+              if (mobileInference.activeModel != null) {
+                _selectedModelId = mobileInference.activeModel;
+                _selectedModelName =
+                    mobileInference.humanName(mobileInference.activeModel!);
+              } else {
+                _selectedModelId = _models.first['id'] as String?;
+                _selectedModelName = _models.first['name'] as String?;
+              }
+            } else {
+              _selectedModelName = 'No model';
+            }
+          });
+        }
+        return;
+      }
+
+      // ── Desktop paths ──
       final bundledInference = context.read<BundledInferenceService>();
       final localInference = context.read<LocalInferenceService>();
 

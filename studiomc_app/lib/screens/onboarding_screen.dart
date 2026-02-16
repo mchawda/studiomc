@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../models/app_models.dart';
 import '../services/bundled_inference_service.dart';
+import '../services/mobile_inference_service.dart';
 import '../services/settings_service.dart';
 import '../utils/platform_utils.dart';
 import '../widgets/common/studiomc_logo.dart';
@@ -120,11 +121,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: const Text('Get Started'),
           ),
         ),
-        const SizedBox(height: 12),
-        TextButton(
-          onPressed: () => context.go('/chat'),
-          child: const Text('I already have a model'),
-        ),
+        if (isDesktop) ...[
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => context.go('/chat'),
+            child: const Text('I already have a model'),
+          ),
+        ],
       ],
     );
   }
@@ -500,14 +503,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     });
   }
 
-  void _goToFirstChat() {
+  void _goToFirstChat() async {
     // Register downloaded model as active so the rest of the app knows
     if (_recommended != null) {
       final settings = context.read<SettingsService>();
       settings.activeModelId = _recommended!.filename;
 
-      // Tell the inference backend to select this model (if running)
-      if (isDesktop) {
+      if (isMobile) {
+        // Tell MobileInferenceService to scan for the new model and load it
+        final mobile = context.read<MobileInferenceService>();
+        await mobile.init(); // re-scan downloaded models
+        await mobile.loadModel(_recommended!.filename);
+        debugPrint('[onboarding] Mobile model loaded: ${_recommended!.filename}');
+      } else {
+        // Tell the inference backend to select this model (if running)
         final inference = context.read<BundledInferenceService>();
         final modelId = _recommended!.filename
             .replaceAll('.gguf', '')
@@ -590,13 +599,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           const SizedBox(height: 16),
           Row(
             children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => context.go('/chat'),
-                  child: const Text('Skip for now'),
+              if (isDesktop) ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => context.go('/chat'),
+                    child: const Text('Skip for now'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
+                const SizedBox(width: 12),
+              ],
               Expanded(
                 child: ElevatedButton(
                   onPressed: () {

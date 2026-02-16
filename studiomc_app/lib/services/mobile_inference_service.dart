@@ -79,8 +79,25 @@ class MobileInferenceService extends ChangeNotifier {
       final modelsDir = await _getModelsDir();
       final modelPath = '${modelsDir.path}/$filename';
 
-      if (!File(modelPath).existsSync()) {
+      final modelFile = File(modelPath);
+      if (!modelFile.existsSync()) {
         debugPrint('[mobile-llm] Model file not found: $modelPath');
+        _loading = false;
+        _available = false;
+        notifyListeners();
+        return false;
+      }
+
+      // Guard: reject models too large for available memory
+      final fileSizeMb = modelFile.lengthSync() / (1024 * 1024);
+      const maxModelSizeMb = 1500; // ~1.5 GB safe limit for mobile
+      if (fileSizeMb > maxModelSizeMb) {
+        debugPrint(
+            '[mobile-llm] Model too large (${fileSizeMb.toInt()} MB). '
+            'Max $maxModelSizeMb MB on mobile.');
+        _downloadError =
+            'Model too large (${fileSizeMb.toInt()} MB). '
+            'Try a smaller model like Qwen2 0.5B.';
         _loading = false;
         _available = false;
         notifyListeners();
@@ -92,10 +109,10 @@ class MobileInferenceService extends ChangeNotifier {
 
       final result = await _llama.initContext(
         modelPath,
-        nCtx: 2048,
-        nBatch: 512,
+        nCtx: 1024, // smaller context to reduce memory
+        nBatch: 256,
         nGpuLayers: gpuLayers,
-        useMlock: true,
+        useMlock: false, // don't lock memory on mobile
         useMmap: true,
         emitLoadProgress: true,
       );
