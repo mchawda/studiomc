@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 /// SQLite database service — single source of truth for local data.
 class DatabaseService {
   static Database? _db;
+
+  /// Pre-open the database. Call once during app startup (before runApp)
+  /// so that the slow APFS file I/O happens before the UI is interactive.
+  Future<void> warmUp() async {
+    await database;
+  }
 
   Future<Database> get database async {
     if (_db != null) return _db!;
@@ -15,14 +23,30 @@ class DatabaseService {
   }
 
   Future<Database> _initDb() async {
-    final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'studiomc.db');
+    // Use Application Support directory so the DB path is stable and writable
+    // regardless of which sqflite factory is active (native vs FFI).
+    final appSupport = await getApplicationSupportDirectory();
+    final dbDir = Directory(p.join(appSupport.path, 'databases'));
+    if (!dbDir.existsSync()) dbDir.createSync(recursive: true);
+    final path = p.join(dbDir.path, 'studiomc.db');
 
-    return openDatabase(
+    final db = await openDatabase(
       path,
       version: 1,
       onCreate: _onCreate,
     );
+
+    // Add images_json column if it doesn't exist (safe to run repeatedly).
+    // This avoids using onUpgrade + version bump which causes sqflite to
+    // perform extra file I/O during open — problematic on external drives.
+    try {
+      await db.execute(
+          'ALTER TABLE messages ADD COLUMN images_json TEXT');
+    } catch (_) {
+      // Column already exists — ignore
+    }
+
+    return db;
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -86,6 +110,7 @@ class DatabaseService {
         tokens INTEGER,
         created_at TEXT,
         parent_message_id TEXT,
+        images_json TEXT,
         FOREIGN KEY(chat_id) REFERENCES chats(id)
       )
     ''');
@@ -329,6 +354,14 @@ class DatabaseService {
     final db = await database;
     await db.delete('benchmarks', where: 'model_id = ?', whereArgs: [id]);
     await db.delete('models', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ── Raw query helper ──
+
+  Future<List<Map<String, dynamic>>> rawQuery(String sql,
+      [List<Object?>? arguments]) async {
+    final db = await database;
+    return db.rawQuery(sql, arguments);
   }
 
   // ── Benchmark operations ──

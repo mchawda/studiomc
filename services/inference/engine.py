@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 logger = logging.getLogger("inference.engine")
 
@@ -140,7 +140,7 @@ class InferenceEngine:
 
     async def generate_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         profile: str = "balanced",
         temperature: float | None = None,
@@ -198,7 +198,7 @@ class InferenceEngine:
 
     async def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         profile: str = "balanced",
         temperature: float | None = None,
@@ -222,16 +222,24 @@ class InferenceEngine:
     # ── Prompt formatting ─────────────────────────────────────────────
 
     @staticmethod
-    def _format_prompt(messages: list[dict[str, str]]) -> str:
+    def _format_prompt(messages: list[dict[str, Any]]) -> str:
         """Convert chat messages to a single prompt string.
 
         Uses a simple ChatML-style format. Model-specific templates
-        can be added later.
+        can be added later.  Multimodal content arrays are flattened to
+        text-only (images are not supported by SpliceLLM).
         """
         parts: list[str] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
+            # Handle multimodal content arrays
+            if isinstance(content, list):
+                text_parts = [
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                content = " ".join(text_parts)
             parts.append(f"<|{role}|>\n{content}")
         parts.append("<|assistant|>\n")
         return "\n".join(parts)

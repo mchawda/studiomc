@@ -219,7 +219,7 @@ class FrontierClient(BackendClient):
     async def generate_stream(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Stream tokens from POST /v1/chat/completions (SSE).
@@ -305,7 +305,7 @@ class FrontierClient(BackendClient):
     async def generate(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
         """Non-streaming generation via streaming under the hood.

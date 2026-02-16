@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
@@ -23,6 +26,9 @@ class ChatInput extends StatefulWidget {
 
   /// Called when a file has been uploaded and a document ID is available.
   final ValueChanged<String>? onDocumentUploaded;
+
+  /// Called when images are attached/changed (base64 encoded).
+  final ValueChanged<List<String>>? onImagesChanged;
 
   /// Called when the user switches models.
   final ValueChanged<String>? onModelChanged;
@@ -41,6 +47,7 @@ class ChatInput extends StatefulWidget {
     required this.onSend,
     this.onAttach,
     this.onDocumentUploaded,
+    this.onImagesChanged,
     this.onModelChanged,
     this.currentModelName,
     this.memoryEnabled = false,
@@ -60,7 +67,13 @@ class _ChatInputState extends State<ChatInput> {
   final List<_AttachedFile> _attachedFiles = [];
   bool _picking = false;
   static const _maxFiles = 5;
-  static const _allowedExtensions = ['pdf', 'txt', 'md'];
+  static const _allowedExtensions = [
+    'pdf', 'txt', 'md', 'docx', 'pptx', 'xlsx', 'json',
+  ];
+
+  // ── Image attachment state ──
+  final List<_AttachedImage> _attachedImages = [];
+  static const _maxImages = 4;
 
   // ── Model selector state ──
   List<Map<String, dynamic>> _models = [];
@@ -78,9 +91,21 @@ class _ChatInputState extends State<ChatInput> {
       final hasText = _controller.text.trim().isNotEmpty;
       if (hasText != _hasText) setState(() => _hasText = hasText);
     });
+    // Enter = send, Shift+Enter = newline
+    _focusNode.onKeyEvent = _handleKeyEvent;
     _selectedModelName = widget.currentModelName;
     _loadModels();
     _checkActiveAdapter();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        !HardwareKeyboard.instance.isShiftPressed) {
+      _handleSend();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   @override
@@ -225,9 +250,14 @@ class _ChatInputState extends State<ChatInput> {
 
   void _handleSend() {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    widget.onSend(text);
+    if (text.isEmpty && _attachedImages.isEmpty) return;
+    widget.onSend(text.isNotEmpty ? text : 'What is in this image?');
     _controller.clear();
+    // Clear images after send
+    if (_attachedImages.isNotEmpty) {
+      setState(() => _attachedImages.clear());
+      widget.onImagesChanged?.call([]);
+    }
     _focusNode.requestFocus();
   }
 
@@ -314,6 +344,112 @@ class _ChatInputState extends State<ChatInput> {
     setState(() => _attachedFiles.removeAt(index));
   }
 
+  // ── Image picking ──
+
+  /// Max dimension for API images (keeps payload reasonable for LLMs).
+  static const _apiMaxDimension = 1536;
+
+  /// Max dimension for thumbnail previews.
+  static const _thumbMaxDimension = 150;
+
+  Future<void> _pickImages() async {
+    if (_picking) return;
+    setState(() => _picking = true);
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        for (final file in result.files) {
+          if (_attachedImages.length >= _maxImages) break;
+          if (file.path == null) continue;
+
+          final isDuplicate = _attachedImages.any(
+            (img) => img.file.name == file.name && img.file.size == file.size,
+          );
+          if (isDuplicate) continue;
+
+          final bytes = await File(file.path!).readAsBytes();
+          final ext = file.extension?.toLowerCase() ?? 'png';
+
+          // Resize for API payload (max 1536px) to avoid OOM / huge payloads
+          final apiBytes = await _resizeImage(bytes, _apiMaxDimension);
+          final base64 = base64Encode(apiBytes);
+
+          // Generate small thumbnail for display (max 150px)
+          final thumbBytes = await _resizeImage(bytes, _thumbMaxDimension);
+
+          setState(() {
+            _attachedImages.add(_AttachedImage(
+              file: file,
+              base64Data: base64,
+              mimeType: _mimeForImageExt(ext),
+              thumbnail: thumbBytes,
+            ));
+          });
+        }
+        _notifyImagesChanged();
+      }
+    } catch (_) {
+      // User cancelled or platform error
+    } finally {
+      setState(() => _picking = false);
+    }
+  }
+
+  /// Resize an image to fit within [maxDimension] pixels on the longest side.
+  /// Returns PNG-encoded bytes. If decoding fails, returns the original bytes.
+  static Future<Uint8List> _resizeImage(
+    Uint8List bytes,
+    int maxDimension,
+  ) async {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: maxDimension,
+      );
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (byteData != null) return byteData.buffer.asUint8List();
+    } catch (_) {
+      // Decoding failed — return original bytes as fallback
+    }
+    return bytes;
+  }
+
+  void _removeImage(int index) {
+    setState(() => _attachedImages.removeAt(index));
+    _notifyImagesChanged();
+  }
+
+  void _notifyImagesChanged() {
+    final dataUrls = _attachedImages
+        .map((img) => 'data:${img.mimeType};base64,${img.base64Data}')
+        .toList();
+    widget.onImagesChanged?.call(dataUrls);
+  }
+
+  String _mimeForImageExt(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return 'image/png';
+    }
+  }
+
   // ── Build ──
 
   @override
@@ -335,6 +471,21 @@ class _ChatInputState extends State<ChatInput> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // ── Attached image thumbnails ──
+                if (_attachedImages.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: SizedBox(
+                      height: 72,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _attachedImages.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (_, i) => _buildImageThumb(theme, i),
+                      ),
+                    ),
+                  ),
+
                 // ── Attached file chips ──
                 if (_attachedFiles.isNotEmpty)
                   Padding(
@@ -409,16 +560,19 @@ class _ChatInputState extends State<ChatInput> {
                         width: 36,
                         height: 36,
                         child: IconButton.filled(
-                          onPressed: _hasText ? _handleSend : null,
+                          onPressed: (_hasText || _attachedImages.isNotEmpty)
+                              ? _handleSend
+                              : null,
                           icon: const Icon(
                             Icons.arrow_upward_rounded,
                             size: 18,
                           ),
                           style: IconButton.styleFrom(
-                            backgroundColor: _hasText
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.secondary
-                                    .withValues(alpha: 0.2),
+                            backgroundColor:
+                                (_hasText || _attachedImages.isNotEmpty)
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.secondary
+                                        .withValues(alpha: 0.2),
                             foregroundColor: Colors.white,
                             disabledBackgroundColor: theme
                                 .colorScheme.secondary
@@ -443,18 +597,16 @@ class _ChatInputState extends State<ChatInput> {
   // ── Attach button ──
 
   Widget _buildAttachButton(ThemeData theme) {
-    final atLimit = _attachedFiles.length >= _maxFiles;
+    final totalAttachments = _attachedFiles.length + _attachedImages.length;
 
     return Tooltip(
-      message: atLimit
-          ? 'Maximum $_maxFiles files'
-          : 'Attach file (PDF, TXT, MD)',
+      message: 'Attach image or file',
       child: SizedBox(
         width: 36,
         height: 36,
         child: Stack(
           children: [
-            IconButton(
+            PopupMenuButton<String>(
               icon: _picking
                   ? SizedBox(
                       width: 18,
@@ -467,18 +619,48 @@ class _ChatInputState extends State<ChatInput> {
                   : Icon(
                       Icons.add,
                       size: 20,
-                      color: atLimit
-                          ? theme.colorScheme.secondary
-                              .withValues(alpha: 0.4)
-                          : theme.colorScheme.secondary,
+                      color: theme.colorScheme.secondary,
                     ),
-              onPressed: atLimit ? null : _pickFiles,
               padding: EdgeInsets.zero,
-              style: IconButton.styleFrom(
-                foregroundColor: theme.colorScheme.secondary,
+              iconSize: 20,
+              offset: const Offset(0, -100),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
               ),
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'image',
+                  enabled: _attachedImages.length < _maxImages,
+                  child: Row(
+                    children: [
+                      Icon(Icons.image_outlined, size: 18,
+                        color: theme.colorScheme.onSurface),
+                      const SizedBox(width: 8),
+                      Text('Image',
+                        style: GoogleFonts.inter(fontSize: 12)),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'file',
+                  enabled: _attachedFiles.length < _maxFiles,
+                  child: Row(
+                    children: [
+                      Icon(Icons.attach_file_rounded, size: 18,
+                        color: theme.colorScheme.onSurface),
+                      const SizedBox(width: 8),
+                      Text('File',
+                        style: GoogleFonts.inter(fontSize: 12)),
+                    ],
+                  ),
+                ),
+              ],
+              onSelected: (value) {
+                if (value == 'image') _pickImages();
+                if (value == 'file') _pickFiles();
+              },
             ),
-            if (_attachedFiles.isNotEmpty)
+            if (totalAttachments > 0)
               Positioned(
                 right: 2,
                 top: 2,
@@ -491,7 +673,7 @@ class _ChatInputState extends State<ChatInput> {
                   ),
                   child: Center(
                     child: Text(
-                      '${_attachedFiles.length}',
+                      '$totalAttachments',
                       style: GoogleFonts.inter(
                         fontSize: 9,
                         fontWeight: FontWeight.w600,
@@ -746,6 +928,42 @@ class _ChatInputState extends State<ChatInput> {
     );
   }
 
+  // ── Image thumbnail ──
+
+  Widget _buildImageThumb(ThemeData theme, int index) {
+    final img = _attachedImages[index];
+
+    return Stack(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.memory(
+            img.thumbnail,
+            width: 72,
+            height: 72,
+            fit: BoxFit.cover,
+          ),
+        ),
+        Positioned(
+          right: 2,
+          top: 2,
+          child: GestureDetector(
+            onTap: () => _removeImage(index),
+            child: Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.close, size: 12, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   IconData _iconForExt(String ext) {
     switch (ext.toLowerCase()) {
       case 'pdf':
@@ -773,5 +991,19 @@ class _AttachedFile {
     required this.file,
     this.state = _FileUploadState.pending,
     this.documentId,
+  });
+}
+
+class _AttachedImage {
+  final PlatformFile file;
+  final String base64Data;
+  final String mimeType;
+  final Uint8List thumbnail;
+
+  _AttachedImage({
+    required this.file,
+    required this.base64Data,
+    required this.mimeType,
+    required this.thumbnail,
   });
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/onboarding_screen.dart';
 import '../screens/chat_screen.dart';
@@ -23,13 +24,24 @@ final appRouter = GoRouter(
       routes: [
         GoRoute(
           path: '/chat',
-          builder: (context, state) => const ChatScreen(),
+          builder: (context, state) {
+            final extra = state.extra as Map<String, String>?;
+            return ChatScreen(
+              key: extra != null ? ValueKey(extra['docId']) : null,
+              docId: extra?['docId'],
+              docName: extra?['docName'],
+            );
+          },
         ),
         GoRoute(
           path: '/chat/:chatId',
-          builder: (context, state) => ChatScreen(
-            chatId: state.pathParameters['chatId'],
-          ),
+          builder: (context, state) {
+            final chatId = state.pathParameters['chatId'];
+            return ChatScreen(
+              key: ValueKey(chatId),
+              chatId: chatId,
+            );
+          },
         ),
         GoRoute(
           path: '/models',

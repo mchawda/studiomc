@@ -33,10 +33,12 @@ class SystemStatus extends StatelessWidget {
         const SizedBox(height: 16),
         _SystemBar(
           label: 'RAM',
-          value: '${(ramUsedMb / 1024).toStringAsFixed(1)} / ${(ramTotalMb / 1024).toStringAsFixed(0)} GB',
-          progress: ramUsedMb / ramTotalMb,
+          value: ramTotalMb > 0
+              ? '${(ramUsedMb / 1024).toStringAsFixed(1)} / ${(ramTotalMb / 1024).toStringAsFixed(0)} GB'
+              : '—',
+          progress: ramTotalMb > 0 ? ramUsedMb / ramTotalMb : 0,
         ),
-        if (vramUsedMb != null && vramTotalMb != null) ...[
+        if (vramUsedMb != null && vramTotalMb != null && vramTotalMb! > 0) ...[
           const SizedBox(height: 12),
           _SystemBar(
             label: 'GPU Memory',

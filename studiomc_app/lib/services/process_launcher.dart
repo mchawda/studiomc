@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../utils/platform_utils.dart';
 import 'api_client.dart';
 
 /// Automatically launches the Python backend services.
@@ -29,7 +30,12 @@ class ProcessLauncher {
 
   /// Launch the backend and wait until the supervisor is healthy.
   /// Safe to call multiple times — only the first call has an effect.
+  /// On mobile platforms, this is a no-op (cannot spawn processes).
   static Future<bool> launchBackend() async {
+    if (isMobile) {
+      _log('Skipping backend launch — not available on mobile');
+      return false;
+    }
     if (_launched) return _backendProcess != null;
     _launched = true;
 

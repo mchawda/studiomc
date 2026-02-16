@@ -13,8 +13,10 @@ import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/inference_service.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
+import 'package:studiomc_app/services/mobile_inference_service.dart';
 import 'package:studiomc_app/services/orchestrator_service.dart';
 import 'package:studiomc_app/services/settings_service.dart';
+import 'package:studiomc_app/utils/platform_utils.dart';
 import 'package:studiomc_app/widgets/chat/branch_indicator.dart';
 import 'package:studiomc_app/widgets/chat/chat_input.dart';
 import 'package:studiomc_app/widgets/chat/context_panel.dart';
@@ -27,7 +29,13 @@ import 'package:studiomc_app/widgets/chat/message_bubble.dart';
 class ChatScreen extends StatefulWidget {
   final String? chatId;
 
-  const ChatScreen({super.key, this.chatId});
+  /// Pre-attached document ID (from "Chat with this document").
+  final String? docId;
+
+  /// Filename of the pre-attached document (for display).
+  final String? docName;
+
+  const ChatScreen({super.key, this.chatId, this.docId, this.docName});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -75,6 +83,9 @@ class _ChatScreenState extends State<ChatScreen> {
   String _modelName = '';
   SpeedRating _speedRating = SpeedRating.ok;
   double _tokPerS = 0;
+  final Stopwatch _streamStopwatch = Stopwatch();
+  int _ttftMs = 0;
+  bool _firstTokenReceived = false;
   List<Message> _messages = [];
   List<Citation> _citations = [];
   List<TraceStep> _traceSteps = [];
@@ -86,33 +97,64 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Attached document IDs for this chat ──
   final List<String> _attachedDocIds = [];
 
+  // ── Pending image data-URLs for next send ──
+  List<String> _pendingImages = [];
+
   // ── Branching state ──
   // Maps a parent message ID to the currently selected child index
   final Map<String, int> _branchSelections = {};
+
+  // ── Cached markdown for export (avoid re-fetching on every build) ──
+  String? _cachedMarkdown;
 
   @override
   void initState() {
     super.initState();
     _chatId = widget.chatId ?? '';
+    // Pre-attach document if navigated via "Chat with this document"
+    if (widget.docId != null) {
+      _attachedDocIds.add(widget.docId!);
+    }
     _loadMemoryPreference();
-    _loadData();
-    // Listen for model changes from LocalInferenceService
+    // Defer _loadData to after the build frame so that
+    // notifyListeners() calls (e.g. selectModelByPreference) don't
+    // fire during the widget tree build phase.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final local = context.read<LocalInferenceService>();
-      local.addListener(_onModelChanged);
+      if (!mounted) return;
+      _loadData();
+      if (isMobile) {
+        final mobile = context.read<MobileInferenceService>();
+        mobile.addListener(_onModelChanged);
+      } else {
+        final local = context.read<LocalInferenceService>();
+        local.addListener(_onModelChanged);
+      }
     });
   }
 
   void _onModelChanged() {
     if (!mounted) return;
-    final local = context.read<LocalInferenceService>();
-    if (local.activeModel != null) {
-      final newName = local.humanName(local.activeModel!);
-      if (newName != _modelName) {
-        setState(() {
-          _modelName = newName;
-          _tokPerS = local.tokPerS;
-        });
+    if (isMobile) {
+      final mobile = context.read<MobileInferenceService>();
+      if (mobile.activeModel != null) {
+        final newName = mobile.humanName(mobile.activeModel!);
+        if (newName != _modelName) {
+          setState(() {
+            _modelName = newName;
+            _tokPerS = mobile.tokPerS;
+          });
+        }
+      }
+    } else {
+      final local = context.read<LocalInferenceService>();
+      if (local.activeModel != null) {
+        final newName = local.humanName(local.activeModel!);
+        if (newName != _modelName) {
+          setState(() {
+            _modelName = newName;
+            _tokPerS = local.tokPerS;
+          });
+        }
       }
     }
   }
@@ -148,23 +190,31 @@ class _ChatScreenState extends State<ChatScreen> {
     final settings = context.read<SettingsService>();
     final bundledInference = context.read<BundledInferenceService>();
     final localInference = context.read<LocalInferenceService>();
+    final mobileInference = context.read<MobileInferenceService>();
 
     try {
-      // 1) Ollama (primary for small models)
-      if (localInference.available) {
-        if (settings.hasActiveModel) {
-          localInference.selectModelByPreference(settings.activeModelId!);
+      if (isMobile) {
+        // Mobile: use on-device llama.cpp
+        if (mobileInference.available && mobileInference.activeModel != null) {
+          _modelName = mobileInference.humanName(mobileInference.activeModel!);
         }
-        if (localInference.activeModel != null) {
-          _modelName = localInference.humanName(localInference.activeModel!);
+      } else {
+        // 1) Ollama (primary for small models)
+        if (localInference.available) {
+          if (settings.hasActiveModel) {
+            localInference.selectModelByPreference(settings.activeModelId!);
+          }
+          if (localInference.activeModel != null) {
+            _modelName = localInference.humanName(localInference.activeModel!);
+          }
         }
-      }
 
-      // 2) SpliceLLM (for large models)
-      if (_modelName.isEmpty &&
-          bundledInference.available &&
-          bundledInference.activeModel != null) {
-        _modelName = bundledInference.activeModel!;
+        // 2) SpliceLLM (for large models)
+        if (_modelName.isEmpty &&
+            bundledInference.available &&
+            bundledInference.activeModel != null) {
+          _modelName = bundledInference.activeModel!;
+        }
       }
 
       // 3) Backend inference service fallback
@@ -185,21 +235,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Load chat details and messages
       if (_chatId.isNotEmpty) {
+        bool loaded = false;
         // Try loading via ChatService first
         if (api.isAvailable) {
           try {
             final chatService = ChatService();
             final chatData = await chatService.getChat(_chatId);
-            if (chatData != null) {
+            if (chatData != null && chatData.messages.isNotEmpty) {
               _chatTitle = chatData.chat.title;
               _isPinned = chatData.chat.isPinned;
               _messages = chatData.messages;
+              loaded = true;
             }
           } catch (_) {
-            // Fall back to local DB
-            await _loadMessagesFromDb(db);
+            // API failed — will fall through to local DB
           }
-        } else {
+        }
+        // Always fall back to local DB if API didn't return messages
+        if (!loaded) {
           await _loadMessagesFromDb(db);
         }
 
@@ -208,6 +261,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       setState(() => _isLoading = false);
+      _refreshMarkdownCache();
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -219,17 +273,25 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _loadMessagesFromDb(DatabaseService db) async {
     final rows = await db.getMessages(_chatId);
     _messages = rows
-        .map((r) => Message(
-              id: r['id'] as String,
-              chatId: r['chat_id'] as String,
-              role: _parseRole(r['role'] as String),
-              content: r['content'] as String,
-              tokens: r['tokens'] as int? ?? 0,
-              createdAt:
-                  DateTime.tryParse(r['created_at'] as String? ?? '') ??
-                      DateTime.now(),
-              parentMessageId: r['parent_message_id'] as String?,
-            ))
+        .map((r) {
+          // Restore images from DB if stored
+          final imagesRaw = r['images_json'] as String?;
+          final images = (imagesRaw != null && imagesRaw.isNotEmpty)
+              ? imagesRaw.split('||SEP||')
+              : <String>[];
+          return Message(
+            id: r['id'] as String,
+            chatId: r['chat_id'] as String,
+            role: _parseRole(r['role'] as String),
+            content: r['content'] as String,
+            tokens: r['tokens'] as int? ?? 0,
+            createdAt:
+                DateTime.tryParse(r['created_at'] as String? ?? '') ??
+                    DateTime.now(),
+            parentMessageId: r['parent_message_id'] as String?,
+            images: images,
+          );
+        })
         .toList();
 
     // Load chat title from DB
@@ -294,7 +356,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _streamSub?.cancel();
     _scrollController.dispose();
     try {
-      context.read<LocalInferenceService>().removeListener(_onModelChanged);
+      if (isMobile) {
+        context.read<MobileInferenceService>().removeListener(_onModelChanged);
+      } else {
+        context.read<LocalInferenceService>().removeListener(_onModelChanged);
+      }
     } catch (_) {}
     super.dispose();
   }
@@ -333,13 +399,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<String?> _getMarkdownContent() async {
     if (_chatId.isEmpty) return null;
-    final api = context.read<ApiClient>();
 
-    if (api.isAvailable) {
-      return ChatService().exportChat(_chatId);
-    }
-
-    // Fallback: build markdown from local messages
+    // Build markdown from local messages (fast, no HTTP)
     final buffer = StringBuffer();
     buffer.writeln('# $_chatTitle\n');
     for (final msg in _messages) {
@@ -351,6 +412,13 @@ class _ChatScreenState extends State<ChatScreen> {
       buffer.writeln('---\n');
     }
     return buffer.toString();
+  }
+
+  /// Refresh cached markdown (call only when messages change, not during streaming).
+  void _refreshMarkdownCache() {
+    _getMarkdownContent().then((md) {
+      if (mounted) setState(() => _cachedMarkdown = md);
+    });
   }
 
   // ── Memory toggle ──
@@ -449,67 +517,82 @@ class _ChatScreenState extends State<ChatScreen> {
     final db = context.read<DatabaseService>();
     final bundledInference = context.read<BundledInferenceService>();
     final localInference = context.read<LocalInferenceService>();
+    final mobileInference = context.read<MobileInferenceService>();
 
-    // Create chat if needed
-    if (_chatId.isEmpty) {
-      _chatId = 'chat-${DateTime.now().millisecondsSinceEpoch}';
-      _chatTitle = text.length > 50 ? '${text.substring(0, 50)}...' : text;
-      await db.createChat({
-        'id': _chatId,
-        'title': _chatTitle,
-        'model_id': _modelName,
-        'mode': _chatMode.name,
-        'created_at': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
-      });
-      // Persist initial preset for this conversation
-      await db.setSetting('chat_preset_$_chatId', _selectedPreset.name);
-    }
+    // Capture pending images BEFORE any await to avoid race condition
+    // (the ChatInput clears _pendingImages right after calling onSend).
+    final images = List<String>.from(_pendingImages);
+    _pendingImages = [];
 
     // Determine parent message ID for branching
     final parentMsgId = _messages.isNotEmpty ? _messages.last.id : null;
 
-    // Add user message
-    final userMsgId = 'msg-${DateTime.now().millisecondsSinceEpoch}';
-    final userMsg = Message(
-      id: userMsgId,
-      chatId: _chatId,
-      role: MessageRole.user,
-      content: text,
-      tokens: text.split(' ').length,
-      createdAt: DateTime.now(),
-      parentMessageId: parentMsgId,
-    );
+    try {
+      // Create chat if needed
+      if (_chatId.isEmpty) {
+        _chatId = 'chat-${DateTime.now().millisecondsSinceEpoch}';
+        _chatTitle = text.length > 50 ? '${text.substring(0, 50)}...' : text;
+        await db.createChat({
+          'id': _chatId,
+          'title': _chatTitle,
+          'model_id': _modelName,
+          'mode': _chatMode.name,
+          'created_at': DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+        // Persist initial preset for this conversation
+        await db.setSetting('chat_preset_$_chatId', _selectedPreset.name);
+      }
 
-    await db.insertMessage({
-      'id': userMsgId,
-      'chat_id': _chatId,
-      'role': 'user',
-      'content': text,
-      'tokens': text.split(' ').length,
-      'created_at': DateTime.now().toIso8601String(),
-      if (parentMsgId != null) 'parent_message_id': parentMsgId,
-    });
+      // Add user message
+      final userMsgId = 'msg-${DateTime.now().millisecondsSinceEpoch}';
+      final userMsg = Message(
+        id: userMsgId,
+        chatId: _chatId,
+        role: MessageRole.user,
+        content: text,
+        tokens: text.split(' ').length,
+        createdAt: DateTime.now(),
+        parentMessageId: parentMsgId,
+        images: images,
+      );
 
-    setState(() {
-      _messages.add(userMsg);
-    });
-    _scrollToBottom();
-
-    // Routing: always go through the bundled inference router (port 8100)
-    // which handles backend fallback automatically (Ollama → llamacpp → SpliceLLM).
-    // Only fall back to direct Ollama if the bundled service is completely down.
-    final useStudiomc = bundledInference.available;
-    final useOllama = !useStudiomc && localInference.available;
-    if (!useOllama && !useStudiomc) {
-      setState(() {
-        _error = 'No inference engine available. Download a model first.';
+      await db.insertMessage({
+        'id': userMsgId,
+        'chat_id': _chatId,
+        'role': 'user',
+        'content': text,
+        'tokens': text.split(' ').length,
+        'created_at': DateTime.now().toIso8601String(),
+        if (parentMsgId != null) 'parent_message_id': parentMsgId,
+        if (images.isNotEmpty) 'images_json': images.join('||SEP||'),
       });
-      return;
-    }
+
+      setState(() {
+        _messages.add(userMsg);
+      });
+      _scrollToBottom();
+
+      // Routing: mobile uses on-device llama.cpp, desktop uses the bundled
+      // inference router (port 8100) with Ollama fallback.
+      final useMobile = isMobile && mobileInference.available;
+      final useStudiomc = !isMobile && bundledInference.available;
+      final useOllama = !isMobile && !useStudiomc && localInference.available;
+      if (!useMobile && !useOllama && !useStudiomc) {
+        setState(() {
+          _error = 'No inference engine available. Download a model first.';
+        });
+        return;
+      }
 
     final assistantMsgId =
         'msg-stream-${DateTime.now().millisecondsSinceEpoch}';
+
+    // Start timing for TTFT
+    _streamStopwatch.reset();
+    _streamStopwatch.start();
+    _firstTokenReceived = false;
+    _ttftMs = 0;
 
     setState(() {
       _isStreaming = true;
@@ -533,7 +616,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       // Build messages payload with preset system prompt, memory, and context
-      final messagesPayload = <Map<String, String>>[];
+      final messagesPayload = <Map<String, dynamic>>[];
 
       // Inject preset system prompt
       final systemPrompt = _presetSystemPrompts[_selectedPreset];
@@ -569,36 +652,74 @@ class _ChatScreenState extends State<ChatScreen> {
         } catch (_) {}
       }
 
-      // Inject document context if any documents are attached
-      if (_attachedDocIds.isNotEmpty) {
-        try {
-          final docParts = <String>[];
-          for (final docId in _attachedDocIds) {
-            final content = await db.getDocumentContent(docId);
-            if (content != null && content.isNotEmpty) {
-              // Truncate to ~2000 chars to fit context window
-              final truncated = content.length > 2000
-                  ? content.substring(0, 2000)
-                  : content;
-              docParts.add(truncated);
-            }
+      // Inject document context — both inline-attached docs AND
+      // all documents uploaded via the Documents screen (stored locally).
+      try {
+        final docParts = <String>[];
+        final seenIds = <String>{};
+
+        // 1) Inline-attached docs (highest priority)
+        for (final docId in _attachedDocIds) {
+          if (seenIds.contains(docId)) continue;
+          seenIds.add(docId);
+          final content = await db.getDocumentContent(docId);
+          if (content != null && content.isNotEmpty) {
+            final truncated = content.length > 2000
+                ? content.substring(0, 2000)
+                : content;
+            docParts.add(truncated);
           }
-          if (docParts.isNotEmpty) {
-            messagesPayload.add({
-              'role': 'system',
-              'content':
-                  'The user has uploaded documents. Use them to answer questions:\n\n${docParts.join('\n\n---\n\n')}',
-            });
+        }
+
+        // 2) All other documents from the Documents screen
+        final allDocs = await db.getDocuments();
+        for (final doc in allDocs) {
+          final docId = doc['id'] as String;
+          if (seenIds.contains(docId)) continue;
+          seenIds.add(docId);
+          final content = await db.getDocumentContent(docId);
+          if (content != null && content.isNotEmpty) {
+            final truncated = content.length > 2000
+                ? content.substring(0, 2000)
+                : content;
+            final filename = doc['filename'] as String? ?? 'document';
+            docParts.add('[$filename]\n$truncated');
           }
-        } catch (_) {}
-      }
+          // Cap at 5 documents to avoid exceeding context window
+          if (docParts.length >= 5) break;
+        }
+
+        if (docParts.isNotEmpty) {
+          messagesPayload.add({
+            'role': 'system',
+            'content':
+                'The user has uploaded documents. Use them to answer questions:\n\n${docParts.join('\n\n---\n\n')}',
+          });
+        }
+      } catch (_) {}
 
       messagesPayload.addAll(_messages
           .where((m) => !m.isStreaming)
-          .map((m) => {
+          .map((m) {
+            if (m.images.isNotEmpty) {
+              // Build OpenAI multimodal content array
+              final contentParts = <Map<String, dynamic>>[
+                {'type': 'text', 'text': m.content},
+                ...m.images.map((dataUrl) => {
+                      'type': 'image_url',
+                      'image_url': {'url': dataUrl},
+                    }),
+              ];
+              return <String, dynamic>{
                 'role': _roleToString(m.role),
-                'content': m.content,
-              })
+                'content': contentParts,
+              };
+            }
+            return <String, dynamic>{
+              'role': _roleToString(m.role),
+              'content': m.content,
+            };
+          })
           .toList());
 
       final buffer = StringBuffer();
@@ -613,7 +734,9 @@ class _ChatScreenState extends State<ChatScreen> {
       final modelFits = localInference.activeModelFitsInMemory;
 
       Stream<String> tokenStream;
-      if (useStudiomc) {
+      if (useMobile) {
+        tokenStream = mobileInference.streamChat(messages: messagesPayload);
+      } else if (useStudiomc) {
         tokenStream = bundledInference.streamChat(messages: messagesPayload);
         usingStudiomcFallback = true;
       } else if (useOllama) {
@@ -695,6 +818,12 @@ class _ChatScreenState extends State<ChatScreen> {
             return;
           }
 
+          // Capture TTFT on first real token
+          if (!_firstTokenReceived) {
+            _firstTokenReceived = true;
+            _ttftMs = _streamStopwatch.elapsedMilliseconds;
+          }
+
           buffer.write(token);
           tokenCount++;
           setState(() {
@@ -716,42 +845,68 @@ class _ChatScreenState extends State<ChatScreen> {
           _scrollToBottom();
         },
         onDone: () async {
+          _streamStopwatch.stop();
           final finalContent = buffer.toString();
+          final elapsedMs = _streamStopwatch.elapsedMilliseconds;
 
           // Update tok/s from whichever engine was used
           _tokPerS = usingStudiomcFallback
               ? bundledInference.tokPerS
               : localInference.tokPerS;
 
-          // Save to DB
-          await db.insertMessage({
-            'id': assistantMsgId,
-            'chat_id': _chatId,
-            'role': 'assistant',
-            'content': finalContent,
-            'tokens': tokenCount,
-            'created_at': DateTime.now().toIso8601String(),
-            'parent_message_id': userMsgId,
-          });
-
-          // Update chat timestamp
-          await db.updateChat(_chatId, {
-            'updated_at': DateTime.now().toIso8601String(),
-          });
-
-          // Save memory summary if enabled
-          if (_memoryEnabled && finalContent.isNotEmpty) {
-            try {
-              await db.ensureMemoryTables();
-              // Build a compact summary of the last exchange
-              final summaryText =
-                  'User asked: ${text.length > 200 ? text.substring(0, 200) : text}. '
-                  'Assistant replied: ${finalContent.length > 300 ? finalContent.substring(0, 300) : finalContent}';
-              await db.saveChatSummary(
-                  _chatId, summaryText, tokenCount);
-            } catch (_) {}
+          // If engine didn't report tok/s, calculate from our own timing
+          if (_tokPerS <= 0 && elapsedMs > 0) {
+            _tokPerS = tokenCount / (elapsedMs / 1000.0);
           }
 
+          try {
+            // Save to DB
+            await db.insertMessage({
+              'id': assistantMsgId,
+              'chat_id': _chatId,
+              'role': 'assistant',
+              'content': finalContent,
+              'tokens': tokenCount,
+              'created_at': DateTime.now().toIso8601String(),
+              'parent_message_id': userMsgId,
+            });
+
+            // Update chat timestamp
+            await db.updateChat(_chatId, {
+              'updated_at': DateTime.now().toIso8601String(),
+            });
+
+            // ── Save benchmark for performance dashboard ──
+            try {
+              await db.insertBenchmark({
+                'id': 'bench-${DateTime.now().millisecondsSinceEpoch}',
+                'model_id': _modelName,
+                'hw_fingerprint': '',
+                'ttft_ms': _ttftMs,
+                'tok_per_s': _tokPerS,
+                'created_at': DateTime.now().toIso8601String(),
+              });
+              debugPrint('[perf] Saved benchmark: ttft=${_ttftMs}ms tok/s=${_tokPerS.toStringAsFixed(1)}');
+            } catch (e) {
+              debugPrint('[perf] Failed to save benchmark: $e');
+            }
+
+            // Save memory summary if enabled
+            if (_memoryEnabled && finalContent.isNotEmpty) {
+              try {
+                await db.ensureMemoryTables();
+                final summaryText =
+                    'User asked: ${text.length > 200 ? text.substring(0, 200) : text}. '
+                    'Assistant replied: ${finalContent.length > 300 ? finalContent.substring(0, 300) : finalContent}';
+                await db.saveChatSummary(
+                    _chatId, summaryText, tokenCount);
+              } catch (_) {}
+            }
+          } catch (e) {
+            debugPrint('Error saving message to DB: $e');
+          }
+
+          if (!mounted) return;
           setState(() {
             _isStreaming = false;
             final idx =
@@ -769,6 +924,7 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             }
           });
+          _refreshMarkdownCache();
         },
         onError: (e) {
           setState(() {
@@ -785,6 +941,16 @@ class _ChatScreenState extends State<ChatScreen> {
         _error = 'Failed to connect: $e';
         _messages.removeWhere((m) => m.id == assistantMsgId);
       });
+    }
+    } catch (e) {
+      // Outer catch: handles errors during chat creation, message insertion,
+      // or any other unhandled exception to prevent app crash.
+      if (mounted) {
+        setState(() {
+          _isStreaming = false;
+          _error = 'Failed to send message: $e';
+        });
+      }
     }
   }
 
@@ -986,7 +1152,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Fall back to SpliceLLM for models too large for GPU.
   void _fallbackToSpliceLLM(
-    List<Map<String, String>> messagesPayload,
+    List<Map<String, dynamic>> messagesPayload,
     StringBuffer buffer,
     String assistantMsgId,
     String userMsgId,
@@ -1059,23 +1225,45 @@ class _ChatScreenState extends State<ChatScreen> {
       String userText,
       dynamic db,
       double tokPerS) async {
+    _streamStopwatch.stop();
     final finalContent = buffer.toString();
+    final elapsedMs = _streamStopwatch.elapsedMilliseconds;
     _tokPerS = tokPerS;
+    if (_tokPerS <= 0 && elapsedMs > 0) {
+      _tokPerS = tokenCount / (elapsedMs / 1000.0);
+    }
 
-    // Save to DB
-    await db.insertMessage({
-      'id': assistantMsgId,
-      'chat_id': _chatId,
-      'role': 'assistant',
-      'content': finalContent,
-      'tokens': tokenCount,
-      'created_at': DateTime.now().toIso8601String(),
-      'parent_message_id': userMsgId,
-    });
-    await db.updateChat(_chatId, {
-      'updated_at': DateTime.now().toIso8601String(),
-    });
+    try {
+      // Save to DB
+      await db.insertMessage({
+        'id': assistantMsgId,
+        'chat_id': _chatId,
+        'role': 'assistant',
+        'content': finalContent,
+        'tokens': tokenCount,
+        'created_at': DateTime.now().toIso8601String(),
+        'parent_message_id': userMsgId,
+      });
+      await db.updateChat(_chatId, {
+        'updated_at': DateTime.now().toIso8601String(),
+      });
 
+      // ── Save benchmark for performance dashboard ──
+      try {
+        await db.insertBenchmark({
+          'id': 'bench-${DateTime.now().millisecondsSinceEpoch}',
+          'model_id': _modelName,
+          'hw_fingerprint': '',
+          'ttft_ms': _ttftMs,
+          'tok_per_s': _tokPerS,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
+    } catch (e) {
+      debugPrint('Error saving message to DB: $e');
+    }
+
+    if (!mounted) return;
     setState(() {
       final idx = _messages.indexWhere((m) => m.id == assistantMsgId);
       if (idx != -1) {
@@ -1092,10 +1280,12 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _isStreaming = false;
     });
+    _refreshMarkdownCache();
   }
 
   /// Helper: handle stream error.
   void _onStreamError(dynamic error, String assistantMsgId) {
+    if (!mounted) return;
     setState(() {
       _isStreaming = false;
       _error = 'Error: $error';
@@ -1115,6 +1305,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
@@ -1202,6 +1393,53 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
         ),
 
+        // ── Active document banner ──
+        if (widget.docName != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.06),
+              border: Border(top: BorderSide(color: theme.dividerColor)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.description_outlined,
+                    size: 16, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Chatting with: ${widget.docName}',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: theme.colorScheme.primary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, size: 14),
+                    onPressed: () {
+                      setState(() {
+                        _attachedDocIds.remove(widget.docId);
+                      });
+                    },
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Remove document context',
+                    style: IconButton.styleFrom(
+                      foregroundColor: theme.colorScheme.secondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
         // ── Input bar ──
         ChatInput(
           onSend: _sendMessage,
@@ -1209,6 +1447,14 @@ class _ChatScreenState extends State<ChatScreen> {
           onMemoryToggled: _handleMemoryToggle,
           currentModelName: _modelName,
           onModelChanged: (modelId) {
+            if (isMobile) {
+              final mobileInference = context.read<MobileInferenceService>();
+              mobileInference.loadModel(modelId);
+              setState(() {
+                _modelName = mobileInference.humanName(modelId);
+              });
+              return;
+            }
             final localInference = context.read<LocalInferenceService>();
             localInference.selectModel(modelId);
             setState(() {
@@ -1217,6 +1463,9 @@ class _ChatScreenState extends State<ChatScreen> {
           },
           onDocumentUploaded: (docId) {
             setState(() => _attachedDocIds.add(docId));
+          },
+          onImagesChanged: (images) {
+            _pendingImages = images;
           },
         ),
       ],
@@ -1232,19 +1481,14 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           // Left side: conversation controls (if active chat)
           if (hasActiveChat && !isMobile)
-            FutureBuilder<String?>(
-              future: _getMarkdownContent(),
-              builder: (context, snapshot) {
-                return ConversationControls(
-                  title: _chatTitle,
-                  isPinned: _isPinned,
-                  markdownContent: snapshot.data,
-                  displayMode: ConversationControlsDisplay.inline,
-                  onRename: _handleRename,
-                  onPin: _handlePin,
-                  onExport: _handleExport,
-                );
-              },
+            ConversationControls(
+              title: _chatTitle,
+              isPinned: _isPinned,
+              markdownContent: _cachedMarkdown,
+              displayMode: ConversationControlsDisplay.inline,
+              onRename: _handleRename,
+              onPin: _handlePin,
+              onExport: _handleExport,
             ),
 
           const Spacer(),

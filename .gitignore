@@ -40,3 +40,5 @@ dist/
 product/
 product-plan/
 Blueprint.md
+services/build/
+.studiomc_test/

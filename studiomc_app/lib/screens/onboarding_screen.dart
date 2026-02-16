@@ -2,12 +2,14 @@
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
 import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../models/app_models.dart';
 import '../services/settings_service.dart';
+import '../utils/platform_utils.dart';
 import '../widgets/common/studiomc_logo.dart';
 
 /// Onboarding: Welcome → Scan → Recommend → Download → First Chat.
@@ -102,7 +104,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             style: theme.textTheme.displaySmall,
             textAlign: TextAlign.center),
         const SizedBox(height: 12),
-        Text('Your own AI assistant that runs entirely on your machine.',
+        Text(
+            isMobile
+                ? 'Your own AI assistant that runs entirely on your device.'
+                : 'Your own AI assistant that runs entirely on your machine.',
             style: theme.textTheme.bodyLarge
                 ?.copyWith(color: theme.colorScheme.secondary),
             textAlign: TextAlign.center),
@@ -131,71 +136,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _scanHardwareLocal() async {
-    // Read system info directly from the OS — no backend needed
     try {
       _cpuCores = Platform.numberOfProcessors;
 
-      // Get system profiler info on macOS
-      if (Platform.isMacOS) {
-        final sysInfo = await Process.run('sysctl', ['-n', 'hw.memsize']);
-        if (sysInfo.exitCode == 0) {
-          final bytes = int.tryParse(sysInfo.stdout.toString().trim()) ?? 0;
-          _ramMb = (bytes / (1024 * 1024)).round();
-        }
-
-        final cpuInfo =
-            await Process.run('sysctl', ['-n', 'machdep.cpu.brand_string']);
-        if (cpuInfo.exitCode == 0) {
-          _cpuName = cpuInfo.stdout.toString().trim();
-          if (_cpuName.isEmpty) {
-            // Apple Silicon doesn't have brand_string, detect via uname
-            final uname = await Process.run('uname', ['-m']);
-            final arch = uname.stdout.toString().trim();
-            _cpuName = arch == 'arm64' ? 'Apple Silicon' : arch;
-          }
-        }
-
-        // Detect GPU via system_profiler
-        final gpuInfo = await Process.run(
-            'system_profiler', ['SPDisplaysDataType', '-detailLevel', 'mini']);
-        if (gpuInfo.exitCode == 0) {
-          final output = gpuInfo.stdout.toString();
-          final chipMatch = RegExp(r'Chipset Model:\s*(.+)').firstMatch(output);
-          if (chipMatch != null) {
-            _gpuName = chipMatch.group(1)?.trim() ?? '';
-          } else if (_cpuName.contains('Apple')) {
-            // On Apple Silicon, GPU is integrated
-            _gpuName = _cpuName;
-          }
-        }
-      } else if (Platform.isWindows) {
-        // Windows: use wmic
-        final memInfo = await Process.run(
-            'wmic', ['computersystem', 'get', 'TotalPhysicalMemory']);
-        if (memInfo.exitCode == 0) {
-          final lines = memInfo.stdout.toString().trim().split('\n');
-          if (lines.length > 1) {
-            final bytes = int.tryParse(lines.last.trim()) ?? 0;
-            _ramMb = (bytes / (1024 * 1024)).round();
-          }
-        }
-        _cpuName = Platform.environment['PROCESSOR_IDENTIFIER'] ?? 'Unknown';
+      if (isMobile) {
+        // ── Mobile: use device_info_plus (no Process calls) ──
+        await _scanMobileHardware();
       } else {
-        // Linux
-        _cpuName = 'Linux CPU';
-        try {
-          final memInfo = await Process.run('grep', ['MemTotal', '/proc/meminfo']);
-          if (memInfo.exitCode == 0) {
-            final match =
-                RegExp(r'(\d+)').firstMatch(memInfo.stdout.toString());
-            if (match != null) {
-              _ramMb = (int.parse(match.group(1)!) / 1024).round();
-            }
-          }
-        } catch (_) {}
+        // ── Desktop: read from OS commands ──
+        await _scanDesktopHardware();
       }
     } catch (_) {
-      // Fallback: just use processor count
       _ramMb = 0;
       _cpuName = '${Platform.operatingSystem} (${_cpuCores} cores)';
     }
@@ -205,6 +156,91 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
     if (mounted) {
       setState(() => _step = OnboardingStep.recommend);
+    }
+  }
+
+  Future<void> _scanMobileHardware() async {
+    final deviceInfo = DeviceInfoPlugin();
+    if (Platform.isAndroid) {
+      final android = await deviceInfo.androidInfo;
+      _cpuName = android.hardware;
+      // Android doesn't expose total RAM directly via device_info_plus.
+      // Use a conservative estimate based on SDK level for model selection.
+      // Most modern phones (2022+) have 4-8 GB.
+      final sdkInt = android.version.sdkInt;
+      _ramMb = sdkInt >= 31 ? 6144 : 4096; // conservative estimate
+      _gpuName = 'Mobile GPU';
+    } else if (Platform.isIOS) {
+      final ios = await deviceInfo.iosInfo;
+      _cpuName = ios.utsname.machine;
+      // Estimate RAM based on device model (Apple doesn't expose directly)
+      _ramMb = _estimateIosRam(ios.utsname.machine);
+      _gpuName = 'Apple GPU';
+    }
+  }
+
+  int _estimateIosRam(String machine) {
+    // Conservative RAM estimates by device generation
+    if (machine.contains('iPhone16') || machine.contains('iPhone17')) return 8192;
+    if (machine.contains('iPhone15') || machine.contains('iPhone14')) return 6144;
+    if (machine.contains('iPad14') || machine.contains('iPad16')) return 8192;
+    return 4096; // safe default for older devices
+  }
+
+  Future<void> _scanDesktopHardware() async {
+    if (Platform.isMacOS) {
+      final sysInfo = await Process.run('sysctl', ['-n', 'hw.memsize']);
+      if (sysInfo.exitCode == 0) {
+        final bytes = int.tryParse(sysInfo.stdout.toString().trim()) ?? 0;
+        _ramMb = (bytes / (1024 * 1024)).round();
+      }
+
+      final cpuInfo =
+          await Process.run('sysctl', ['-n', 'machdep.cpu.brand_string']);
+      if (cpuInfo.exitCode == 0) {
+        _cpuName = cpuInfo.stdout.toString().trim();
+        if (_cpuName.isEmpty) {
+          final uname = await Process.run('uname', ['-m']);
+          final arch = uname.stdout.toString().trim();
+          _cpuName = arch == 'arm64' ? 'Apple Silicon' : arch;
+        }
+      }
+
+      final gpuInfo = await Process.run(
+          'system_profiler', ['SPDisplaysDataType', '-detailLevel', 'mini']);
+      if (gpuInfo.exitCode == 0) {
+        final output = gpuInfo.stdout.toString();
+        final chipMatch = RegExp(r'Chipset Model:\s*(.+)').firstMatch(output);
+        if (chipMatch != null) {
+          _gpuName = chipMatch.group(1)?.trim() ?? '';
+        } else if (_cpuName.contains('Apple')) {
+          _gpuName = _cpuName;
+        }
+      }
+    } else if (Platform.isWindows) {
+      final memInfo = await Process.run(
+          'wmic', ['computersystem', 'get', 'TotalPhysicalMemory']);
+      if (memInfo.exitCode == 0) {
+        final lines = memInfo.stdout.toString().trim().split('\n');
+        if (lines.length > 1) {
+          final bytes = int.tryParse(lines.last.trim()) ?? 0;
+          _ramMb = (bytes / (1024 * 1024)).round();
+        }
+      }
+      _cpuName = Platform.environment['PROCESSOR_IDENTIFIER'] ?? 'Unknown';
+    } else {
+      _cpuName = 'Linux CPU';
+      try {
+        final memInfo =
+            await Process.run('grep', ['MemTotal', '/proc/meminfo']);
+        if (memInfo.exitCode == 0) {
+          final match =
+              RegExp(r'(\d+)').firstMatch(memInfo.stdout.toString());
+          if (match != null) {
+            _ramMb = (int.parse(match.group(1)!) / 1024).round();
+          }
+        }
+      } catch (_) {}
     }
   }
 
@@ -585,6 +621,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   _RecommendedModel _pickBestModel() {
     // GGUF quantized models from HuggingFace — direct download, no auth needed.
     // Picks the best model that fits comfortably in the user's RAM.
+    //
+    // Mobile devices get smaller models since they share RAM with the OS
+    // and other apps, and have thermal/battery constraints.
+    if (isMobile) {
+      return _pickBestMobileModel();
+    }
+
     if (_ramMb >= 64000) {
       return const _RecommendedModel(
         name: 'Llama 3.2 8B',
@@ -624,6 +667,42 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         sizeLabel: 'Q4 quantization, ~0.8 GB',
         speedLabel: 'Fast',
         explanation: 'Smallest model — instant responses, good for quick tasks.',
+      );
+    }
+  }
+
+  /// Mobile-specific model recommendations — prioritizes small, fast models
+  /// that won't drain battery or overheat the device.
+  _RecommendedModel _pickBestMobileModel() {
+    if (_ramMb >= 8000) {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 3B',
+        filename: 'llama-3.2-3b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+        sizeLabel: 'Q4 quantization, ~2.0 GB',
+        speedLabel: 'Fast',
+        explanation: 'Best mobile experience. Capable and responsive on your device.',
+      );
+    } else if (_ramMb >= 4000) {
+      return const _RecommendedModel(
+        name: 'Llama 3.2 1B',
+        filename: 'llama-3.2-1b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+        sizeLabel: 'Q4 quantization, ~0.8 GB',
+        speedLabel: 'Fast',
+        explanation: 'Lightweight model — quick responses, easy on battery.',
+      );
+    } else {
+      return const _RecommendedModel(
+        name: 'Qwen2 0.5B',
+        filename: 'qwen2-0_5b-instruct-q4_k_m.gguf',
+        downloadUrl:
+            'https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_k_m.gguf',
+        sizeLabel: 'Q4 quantization, ~0.4 GB',
+        speedLabel: 'Instant',
+        explanation: 'Ultra-lightweight. Fast responses on any phone.',
       );
     }
   }

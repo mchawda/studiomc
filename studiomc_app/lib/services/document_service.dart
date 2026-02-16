@@ -252,6 +252,19 @@ class DocumentService {
         return DocType.txt;
       case 'md':
         return DocType.md;
+      case 'docx':
+        return DocType.docx;
+      case 'pptx':
+        return DocType.pptx;
+      case 'xlsx':
+        return DocType.xlsx;
+      case 'json':
+        return DocType.json;
+      case 'image':
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+        return DocType.image;
       default:
         return DocType.txt;
     }

@@ -442,7 +442,7 @@ async def search_messages(q: str, limit: int = 50) -> SearchResponse:
 # ── Database recording helpers ────────────────────────────────────────
 
 async def _record_to_db(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     response: str,
     metrics: GenerationMetrics,
 ) -> None:
@@ -491,7 +491,7 @@ async def _record_to_db(
 async def _record_ws_to_db(
     *,
     chat_id: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     response: str,
     metrics: GenerationMetrics | None,
 ) -> None:

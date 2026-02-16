@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -50,36 +51,48 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     await api.checkAvailable();
 
     try {
-      if (api.isAvailable) {
-        // Load from backend document service
-        final docService = DocumentService();
-        final results = await Future.wait([
-          docService.listDocuments(),
-          docService.listCollections(),
-        ]);
+      // Always load local DB docs first — they're the source of truth
+      await _loadFromDb(db);
 
-        setState(() {
-          _documents = results[0] as List<Document>;
-          _collections = results[1] as List<Collection>;
-          _isLoading = false;
-        });
-      } else {
-        // Fall back to local DB
-        await _loadFromDb(db);
-        _error =
-            'Backend not available. Showing locally cached documents.';
+      // If backend is available, merge in backend docs (may have richer
+      // metadata like chunk counts and processing status).
+      if (api.isAvailable) {
+        try {
+          final docService = DocumentService();
+          final results = await Future.wait([
+            docService.listDocuments(),
+            docService.listCollections(),
+          ]);
+
+          final backendDocs = results[0] as List<Document>;
+          final backendCols = results[1] as List<Collection>;
+
+          // Merge: backend docs override local ones by ID, but keep
+          // any local-only docs that haven't reached the backend yet.
+          final mergedDocs = <String, Document>{};
+          for (final d in _documents) {
+            mergedDocs[d.id] = d;
+          }
+          for (final d in backendDocs) {
+            mergedDocs[d.id] = d;
+          }
+
+          setState(() {
+            _documents = mergedDocs.values.toList()
+              ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            if (backendCols.isNotEmpty) {
+              _collections = backendCols;
+            }
+          });
+        } catch (_) {
+          // Backend failed — local data is already loaded, keep it
+        }
       }
     } catch (e) {
-      // On backend error, try falling back to local DB
-      try {
-        await _loadFromDb(db);
-        _error = 'Backend error. Showing locally cached documents.';
-      } catch (dbError) {
-        setState(() {
-          _isLoading = false;
-          _error = dbError.toString();
-        });
-      }
+      setState(() {
+        _isLoading = false;
+        _error = e.toString();
+      });
     }
   }
 
@@ -119,6 +132,11 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
   DocType _parseDocType(String mime) {
     if (mime.contains('pdf')) return DocType.pdf;
     if (mime.contains('markdown')) return DocType.md;
+    if (mime.contains('wordprocessingml')) return DocType.docx;
+    if (mime.contains('presentationml')) return DocType.pptx;
+    if (mime.contains('spreadsheetml')) return DocType.xlsx;
+    if (mime.contains('json')) return DocType.json;
+    if (mime.startsWith('image/')) return DocType.image;
     return DocType.txt;
   }
 
@@ -129,81 +147,22 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['pdf', 'txt', 'md'],
+        allowedExtensions: [
+          'pdf', 'txt', 'md', 'docx', 'pptx', 'xlsx', 'json',
+          'png', 'jpg', 'jpeg', 'gif', 'webp',
+        ],
         allowMultiple: true,
       );
 
       if (result == null || result.files.isEmpty) return;
 
+      // Process all files in parallel
+      final futures = <Future>[];
       for (final file in result.files) {
         if (file.path == null) continue;
-
-        final docId = 'doc-${DateTime.now().millisecondsSinceEpoch}';
-        final mime = _getMimeType(file.extension ?? '');
-
-        // Save to local DB immediately
-        await db.insertDocument({
-          'id': docId,
-          'filename': file.name,
-          'mime': mime,
-          'bytes': file.size,
-          'created_at': DateTime.now().toIso8601String(),
-        });
-
-        setState(() {
-          _documents.insert(
-            0,
-            Document(
-              id: docId,
-              filename: file.name,
-              mime: mime,
-              bytes: file.size,
-              docType: _getDocType(file.extension ?? ''),
-              status: DocStatus.processing,
-              processingProgress: 0,
-              createdAt: DateTime.now(),
-            ),
-          );
-        });
-
-        // Upload to backend if available
-        if (api.isAvailable) {
-          try {
-            final docService = DocumentService();
-            final uploadedDoc =
-                await docService.uploadDocument(file.path!);
-
-            if (uploadedDoc != null) {
-              // Trigger extraction
-              await docService.extractDocument(uploadedDoc.id);
-              // Trigger CLaRa ingestion
-              await docService.claraIngest([uploadedDoc.id]);
-
-              // Update local state with the backend doc
-              if (mounted) {
-                setState(() {
-                  final idx = _documents.indexWhere((d) => d.id == docId);
-                  if (idx != -1) {
-                    _documents[idx] = uploadedDoc;
-                  }
-                });
-              }
-            }
-          } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Processing failed for ${file.name}: $e',
-                    style: GoogleFonts.inter(fontSize: 9),
-                  ),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            }
-          }
-        }
+        futures.add(_processFile(file, api, db));
       }
+      await Future.wait(futures);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -225,6 +184,161 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           SnackBar(content: Text('Upload failed: $e')),
         );
       }
+    }
+  }
+
+  /// Handle files dropped via drag-and-drop.
+  Future<void> _handleDroppedFiles(List<String> paths) async {
+    if (paths.isEmpty) return;
+
+    final api = context.read<ApiClient>();
+    final db = context.read<DatabaseService>();
+
+    final futures = <Future>[];
+    for (final path in paths) {
+      final file = File(path);
+      final name = path.split('/').last;
+      final ext = name.split('.').last.toLowerCase();
+      final size = file.lengthSync();
+
+      final platformFile = PlatformFile(
+        name: name,
+        path: path,
+        size: size,
+      );
+      futures.add(_processFile(platformFile, api, db));
+    }
+    await Future.wait(futures);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${paths.length} file${paths.length > 1 ? 's' : ''} uploaded',
+            style: GoogleFonts.inter(fontSize: 9),
+          ),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Process a single file: save locally, upload to backend, extract + ingest.
+  Future<void> _processFile(
+    PlatformFile file,
+    ApiClient api,
+    DatabaseService db,
+  ) async {
+    final docId = 'doc-${DateTime.now().millisecondsSinceEpoch}-${file.name.hashCode.abs()}';
+    final mime = _getMimeType(file.extension ?? '');
+    final ext = file.extension?.toLowerCase() ?? '';
+
+    // Save metadata to local DB immediately
+    await db.insertDocument({
+      'id': docId,
+      'filename': file.name,
+      'mime': mime,
+      'bytes': file.size,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+
+    // Save text content locally so Chat mode can access it
+    final isTextReadable = {'txt', 'md', 'json'}.contains(ext);
+    if (isTextReadable) {
+      try {
+        final content = await File(file.path!).readAsString();
+        await db.saveDocumentContent(docId, content);
+      } catch (_) {}
+    }
+
+    // Text-readable files are ready immediately. Others need backend extraction.
+    final localReady = isTextReadable;
+
+    if (mounted) {
+      setState(() {
+        _documents.insert(
+          0,
+          Document(
+            id: docId,
+            filename: file.name,
+            mime: mime,
+            bytes: file.size,
+            docType: _getDocType(ext),
+            status: localReady ? DocStatus.ready : DocStatus.processing,
+            processingProgress: localReady ? 100 : 0,
+            createdAt: DateTime.now(),
+          ),
+        );
+      });
+    }
+
+    // Backend upload runs in background — don't block the UI.
+    if (api.isAvailable) {
+      _uploadToBackend(file, docId, ext, db);
+    } else if (!localReady && mounted) {
+      // No backend and can't read locally (e.g. PDF) — mark as ready anyway
+      setState(() {
+        final idx = _documents.indexWhere((d) => d.id == docId);
+        if (idx != -1) {
+          _documents[idx] = Document(
+            id: docId,
+            filename: file.name,
+            mime: mime,
+            bytes: file.size,
+            docType: _getDocType(ext),
+            status: DocStatus.ready,
+            createdAt: DateTime.now(),
+          );
+        }
+      });
+    }
+  }
+
+  /// Upload file to backend in the background (non-blocking).
+  void _uploadToBackend(
+    PlatformFile file,
+    String docId,
+    String ext,
+    DatabaseService db,
+  ) async {
+    try {
+      final docService = DocumentService();
+      final uploadedDoc = await docService.uploadDocument(file.path!);
+
+      if (uploadedDoc != null) {
+        // Run extraction and ingestion in parallel
+        await Future.wait([
+          docService.extractDocument(uploadedDoc.id),
+          docService.claraIngest([uploadedDoc.id]),
+        ]);
+
+        // For PDFs, fetch extracted chunks and cache locally for Chat
+        if (ext == 'pdf') {
+          try {
+            final chunks = await docService.getChunks(uploadedDoc.id);
+            if (chunks.isNotEmpty) {
+              final text = chunks.map((c) => c.text).join('\n');
+              await db.saveDocumentContent(docId, text);
+            }
+          } catch (_) {}
+        }
+
+        // Update local state with the backend doc
+        if (mounted) {
+          setState(() {
+            final idx = _documents.indexWhere((d) => d.id == docId);
+            if (idx != -1) {
+              _documents[idx] = uploadedDoc;
+            }
+          });
+        }
+      }
+    } catch (e) {
+      // Backend failed silently — local copy is still usable
+      debugPrint('Backend upload failed for ${file.name}: $e');
     }
   }
 
@@ -437,6 +551,23 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return 'text/markdown';
       case 'txt':
         return 'text/plain';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'json':
+        return 'application/json';
+      case 'png':
+        return 'image/png';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
       default:
         return 'application/octet-stream';
     }
@@ -448,14 +579,32 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
         return DocType.pdf;
       case 'md':
         return DocType.md;
+      case 'txt':
+        return DocType.txt;
+      case 'docx':
+        return DocType.docx;
+      case 'pptx':
+        return DocType.pptx;
+      case 'xlsx':
+        return DocType.xlsx;
+      case 'json':
+        return DocType.json;
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+      case 'gif':
+      case 'webp':
+        return DocType.image;
       default:
         return DocType.txt;
     }
   }
 
   void _handleDocumentChat(Document document) {
-    // Navigate to chat in Docs mode with this document
-    context.go('/chat');
+    context.go('/chat', extra: {
+      'docId': document.id,
+      'docName': document.filename,
+    });
   }
 
   void _handleCollectionChat(Collection collection) {
@@ -561,7 +710,10 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
             ],
 
             // Upload area
-            UploadArea(onUpload: _handleUpload),
+            UploadArea(
+              onUpload: _handleUpload,
+              onFilesDropped: _handleDroppedFiles,
+            ),
             const SizedBox(height: 24),
 
             // Collections section
@@ -787,6 +939,7 @@ class _DocumentCardWithActions extends StatelessWidget {
         document: document,
         isGridView: isGridView,
         onChat: onChat,
+        onDelete: onDelete,
       ),
     );
   }

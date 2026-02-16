@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/database_service.dart';
+import 'package:studiomc_app/utils/platform_utils.dart' as platform;
 import 'package:studiomc_app/widgets/chat/conversation_controls.dart';
 
 /// Perplexity-inspired app shell.
@@ -188,8 +189,12 @@ class _AppShellState extends State<AppShell> {
     final isMobile = width < 768;
 
     if (isMobile) {
+      // SafeArea handles notches and home indicators on real mobile devices.
+      final body = platform.isMobile
+          ? SafeArea(child: widget.child)
+          : widget.child;
       return Scaffold(
-        body: widget.child,
+        body: body,
         drawer: _buildExpandedSidebar(context),
         bottomNavigationBar: _buildBottomNav(context),
       );
@@ -323,6 +328,22 @@ class _AppShellState extends State<AppShell> {
             ),
             tooltip: 'Personalize',
             onTap: () => context.go('/training'),
+          ),
+
+          const SizedBox(height: 4),
+
+          // Performance
+          _buildRailIcon(
+            context,
+            child: Icon(
+              Icons.speed_outlined,
+              size: 22,
+              color: currentPath == '/performance'
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.secondary,
+            ),
+            tooltip: 'Performance',
+            onTap: () => context.go('/performance'),
           ),
 
           const Spacer(),

@@ -35,7 +35,10 @@ class FileAttachButton extends StatefulWidget {
     this.attachedFiles = const [],
     required this.onFilesChanged,
     this.onDocumentUploaded,
-    this.allowedExtensions = const ['pdf', 'txt', 'md'],
+    this.allowedExtensions = const [
+      'pdf', 'txt', 'md',
+      'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'svg',
+    ],
     this.maxFiles = 5,
   });
 
@@ -431,7 +434,7 @@ class _AttachIconButton extends StatelessWidget {
     return Tooltip(
       message: atLimit
           ? 'Maximum $maxFiles files attached'
-          : 'Attach file (PDF, TXT, MD)',
+          : 'Attach file or image',
       child: SizedBox(
         width: 36,
         height: 36,

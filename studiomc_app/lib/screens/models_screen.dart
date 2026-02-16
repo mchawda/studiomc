@@ -7,10 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:studiomc_app/models/mobile_model_catalog.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
+import 'package:studiomc_app/services/mobile_inference_service.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 import 'package:studiomc_app/services/training_service.dart';
+import 'package:studiomc_app/utils/platform_utils.dart';
 
 /// Discover / Models screen — shows installed Ollama models,
 /// personalized (LoRA) adapters, and curated downloads including
@@ -162,34 +165,39 @@ class _ModelsScreenState extends State<ModelsScreen> {
       _error = null;
     });
 
-    // Try Ollama first
-    try {
+    if (isMobile) {
+      // Mobile: on-device inference via flutter_llama
+      final mobile = context.read<MobileInferenceService>();
+      if (!mobile.available) {
+        await mobile.init();
+      }
+    } else {
+      // Desktop: Ollama + SpliceLLM
+      try {
+        final local = context.read<LocalInferenceService>();
+        if (!local.available) {
+          await local.init();
+        }
+      } catch (_) {}
+
+      try {
+        final bundled = context.read<BundledInferenceService>();
+        if (!bundled.available) {
+          await bundled.init();
+        }
+        if (bundled.available) {
+          await _loadBackendModels();
+        }
+      } catch (_) {}
+
       final local = context.read<LocalInferenceService>();
-      if (!local.available) {
-        await local.init();
-      }
-    } catch (_) {}
-
-    // Also probe the bundled inference backend (discovers Ollama + others)
-    try {
       final bundled = context.read<BundledInferenceService>();
-      if (!bundled.available) {
-        await bundled.init();
+      if (!local.available && !bundled.available) {
+        _error = 'No inference backend available. Ensure the app services are running.';
       }
-      if (bundled.available) {
-        await _loadBackendModels();
-      }
-    } catch (_) {}
 
-    // Only show error if NEITHER backend is available
-    final local = context.read<LocalInferenceService>();
-    final bundled = context.read<BundledInferenceService>();
-    if (!local.available && !bundled.available) {
-      _error = 'No inference backend available. Ensure the app services are running.';
+      await _loadAdapters();
     }
-
-    // Load adapters in parallel
-    await _loadAdapters();
 
     if (mounted) setState(() => _isLoading = false);
   }
@@ -568,6 +576,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    if (isMobile) {
+      return _buildMobileModelsView(theme);
+    }
+
     final local = context.watch<LocalInferenceService>();
     final bundled = context.watch<BundledInferenceService>();
     final installed = local.models;
@@ -797,6 +809,242 @@ class _ModelsScreenState extends State<ModelsScreen> {
         ),
       ),
     );
+  }
+
+  // ── Mobile model view ──
+
+  Widget _buildMobileModelsView(ThemeData theme) {
+    final mobile = context.watch<MobileInferenceService>();
+    final downloadedModels = mobile.downloadedModels;
+    final downloadedFilenames = downloadedModels.map((m) => m.filename).toSet();
+
+    // Catalog models not yet downloaded
+    final availableCatalog = MobileModelCatalog.models
+        .where((c) => !downloadedFilenames.contains(c.filename))
+        .toList();
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Models',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: theme.colorScheme.onSurface,
+                          )),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            mobile.available ? Icons.circle : Icons.circle_outlined,
+                            size: 8,
+                            color: mobile.available
+                                ? Colors.green
+                                : theme.colorScheme.secondary,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            mobile.available
+                                ? 'On-device inference'
+                                : 'No model loaded',
+                            style: GoogleFonts.inter(
+                              fontSize: 10,
+                              color: theme.colorScheme.secondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: _load,
+                  icon: const Icon(Icons.refresh_rounded, size: 20),
+                  tooltip: 'Refresh',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // Download progress banner
+            if (mobile.downloadingModel != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Downloading ${mobile.downloadingModel}...',
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: mobile.downloadProgress > 0
+                            ? mobile.downloadProgress
+                            : null,
+                        minHeight: 4,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(mobile.downloadStatus,
+                        style: GoogleFonts.inter(
+                          fontSize: 9,
+                          color: theme.colorScheme.secondary,
+                        )),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+
+            // Content
+            Expanded(
+              child: ListView(
+                children: [
+                  // ── Downloaded Models ──
+                  _buildSectionHeader(theme, 'On Device',
+                      count: downloadedModels.length),
+                  const SizedBox(height: 4),
+                  if (downloadedModels.isEmpty)
+                    _buildEmpty(theme, Icons.download_outlined,
+                        'No models downloaded',
+                        subtitle: 'Download a model below to get started')
+                  else
+                    ...downloadedModels.map((model) => _MobileModelCard(
+                          model: model,
+                          isActive: model.filename == mobile.activeModel,
+                          humanName: mobile.humanName(model.filename),
+                          isLoading: mobile.loading,
+                          onActivate: () => _activateMobileModel(model.filename),
+                          onDelete: () => _deleteMobileModel(model.filename),
+                        )),
+
+                  const SizedBox(height: 10),
+
+                  // ── Available to Download ──
+                  _buildSectionHeader(theme, 'Available',
+                      count: availableCatalog.length),
+                  const SizedBox(height: 4),
+                  if (availableCatalog.isEmpty)
+                    _buildEmpty(theme, Icons.check_circle_outline,
+                        'All models downloaded')
+                  else
+                    ...availableCatalog.map((c) => _MobileCatalogCard(
+                          entry: c,
+                          isDownloading: mobile.downloadingModel == c.filename,
+                          progress: mobile.downloadProgress,
+                          onDownload: () => _downloadMobileModel(c),
+                        )),
+
+                  const SizedBox(height: 12),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _activateMobileModel(String filename) {
+    final mobile = context.read<MobileInferenceService>();
+    final settings = context.read<SettingsService>();
+    mobile.loadModel(filename);
+    settings.activeModelId = filename;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Switching to ${mobile.humanName(filename)}'),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _downloadMobileModel(CatalogModel entry) async {
+    final mobile = context.read<MobileInferenceService>();
+    await mobile.downloadModel(
+      url: entry.downloadUrl,
+      filename: entry.filename,
+      displayName: entry.name,
+    );
+
+    // Auto-load if this is the first model
+    if (mobile.downloadedModels.length == 1) {
+      _activateMobileModel(entry.filename);
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteMobileModel(String filename) async {
+    final theme = Theme.of(context);
+    final mobile = context.read<MobileInferenceService>();
+    final name = mobile.humanName(filename);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Delete $name?',
+            style: GoogleFonts.spaceGrotesk(
+                fontSize: 12, fontWeight: FontWeight.w500)),
+        content: Text('Remove this model from your device. You can re-download later.',
+            style: GoogleFonts.inter(
+                fontSize: 10, color: theme.colorScheme.secondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+                backgroundColor: theme.colorScheme.error),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final ok = await mobile.deleteModel(filename);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ok ? '$name deleted' : 'Failed to delete $name'),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+        setState(() {});
+      }
+    }
   }
 
   /// Returns the name of the active adapter for a given base model, or null.
@@ -1629,6 +1877,293 @@ class _BackendModelCard extends StatelessWidget {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Mobile on-device model card ──
+
+class _MobileModelCard extends StatelessWidget {
+  final MobileModel model;
+  final bool isActive;
+  final String humanName;
+  final bool isLoading;
+  final VoidCallback onActivate;
+  final VoidCallback onDelete;
+
+  const _MobileModelCard({
+    required this.model,
+    required this.isActive,
+    required this.humanName,
+    required this.isLoading,
+    required this.onActivate,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: isActive ? null : onActivate,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primary.withValues(alpha: 0.05)
+              : null,
+          border: Border(
+            bottom: BorderSide(color: theme.dividerColor, width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.smart_toy_outlined,
+              size: 18,
+              color: isActive
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.secondary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(humanName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: isActive ? FontWeight.w500 : FontWeight.w400,
+                        color: theme.colorScheme.onSurface,
+                      )),
+                  Text(model.sizeLabel,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        color: theme.colorScheme.secondary,
+                      )),
+                ],
+              ),
+            ),
+            if (isActive) ...[
+              if (isLoading)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text('Active',
+                      style: GoogleFonts.inter(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                        color: theme.colorScheme.primary,
+                      )),
+                ),
+              const SizedBox(width: 6),
+            ],
+            SizedBox(
+              width: 32,
+              height: 32,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert_rounded,
+                    size: 18, color: theme.colorScheme.secondary),
+                padding: EdgeInsets.zero,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                itemBuilder: (_) => [
+                  if (!isActive)
+                    PopupMenuItem(
+                      value: 'activate',
+                      height: 36,
+                      child: Row(children: [
+                        Icon(Icons.play_arrow_rounded,
+                            size: 16, color: theme.colorScheme.secondary),
+                        const SizedBox(width: 8),
+                        Text('Set active',
+                            style: GoogleFonts.inter(fontSize: 12)),
+                      ]),
+                    ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    height: 36,
+                    child: Row(children: [
+                      Icon(Icons.delete_outline_rounded,
+                          size: 16, color: theme.colorScheme.error),
+                      const SizedBox(width: 8),
+                      Text('Delete',
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            color: theme.colorScheme.error,
+                          )),
+                    ]),
+                  ),
+                ],
+                onSelected: (v) {
+                  if (v == 'activate') onActivate();
+                  if (v == 'delete') onDelete();
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Mobile catalog card (available to download) ──
+
+class _MobileCatalogCard extends StatelessWidget {
+  final CatalogModel entry;
+  final bool isDownloading;
+  final double progress;
+  final VoidCallback onDownload;
+
+  const _MobileCatalogCard({
+    required this.entry,
+    required this.isDownloading,
+    required this.progress,
+    required this.onDownload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: theme.dividerColor, width: 0.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(entry.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.inter(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: theme.colorScheme.onSurface,
+                              )),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(entry.parameterCount,
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: theme.colorScheme.secondary,
+                              )),
+                        ),
+                        const SizedBox(width: 4),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(entry.sizeLabel,
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: theme.colorScheme.secondary,
+                              )),
+                        ),
+                        if (entry.recommended) ...[
+                          const SizedBox(width: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text('Recommended',
+                                style: GoogleFonts.inter(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                  color: const Color(0xFF10B981),
+                                )),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(entry.description,
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          color: theme.colorScheme.secondary,
+                        )),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (!isDownloading)
+                FilledButton.icon(
+                  onPressed: onDownload,
+                  icon: const Icon(Icons.download_rounded, size: 14),
+                  label: const Text('Get'),
+                  style: FilledButton.styleFrom(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    textStyle: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          if (isDownloading) ...[
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress > 0 ? progress : null,
+                minHeight: 3,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text('${(progress * 100).toInt()}%',
+                style: GoogleFonts.inter(
+                  fontSize: 10,
+                  color: theme.colorScheme.secondary,
+                )),
+          ],
+        ],
       ),
     );
   }

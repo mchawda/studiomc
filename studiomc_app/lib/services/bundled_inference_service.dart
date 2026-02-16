@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../utils/platform_utils.dart';
+
 /// Manages the SpliceLLM Python inference service.
 ///
 /// This is the engine that can run models of ANY size by streaming
@@ -46,7 +48,15 @@ class BundledInferenceService extends ChangeNotifier {
   String? _servicesDir;
 
   /// Initialize: find Python, start the inference service.
+  /// On mobile platforms, this is a no-op — mobile uses MobileInferenceService.
   Future<bool> init({String? preferredModel}) async {
+    if (isMobile) {
+      debugPrint('[splicellm] Skipping — not available on mobile');
+      _available = false;
+      notifyListeners();
+      return false;
+    }
+
     _resolveServicePaths();
 
     if (_venvPython == null || _servicesDir == null) {
@@ -226,8 +236,9 @@ class BundledInferenceService extends ChangeNotifier {
   }
 
   /// Stream a chat completion via SSE. Yields token strings.
+  /// Messages may contain multimodal content (images) in OpenAI format.
   Stream<String> streamChat({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? model,
   }) async* {
     if (!_available) {
@@ -295,7 +306,7 @@ class BundledInferenceService extends ChangeNotifier {
 
   /// Non-streaming completion.
   Future<String?> chatCompletion({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? model,
   }) async {
     if (!_available) return null;

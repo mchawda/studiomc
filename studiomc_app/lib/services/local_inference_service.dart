@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../utils/platform_utils.dart';
+
 /// Provides local LLM inference via Ollama's API.
 ///
 /// Ollama exposes an OpenAI-compatible API at http://127.0.0.1:11434.
@@ -32,7 +34,14 @@ class LocalInferenceService extends ChangeNotifier {
   /// Probe Ollama and list models. Call once at startup.
   /// Probe Ollama. If [preferredModel] is set (e.g. from settings),
   /// select it if available, or pull it via Ollama if needed.
+  /// On mobile platforms, this is a no-op — mobile uses MobileInferenceService.
   Future<bool> init({String? preferredModel}) async {
+    if (isMobile) {
+      debugPrint('[ollama] Skipping — not available on mobile');
+      _available = false;
+      return false;
+    }
+
     try {
       final resp = await _http
           .get(Uri.parse('$_ollamaBase/api/tags'))
@@ -262,8 +271,9 @@ class LocalInferenceService extends ChangeNotifier {
   }
 
   /// Stream a chat completion. Yields token strings as they arrive.
+  /// Messages may contain multimodal content (images) in OpenAI format.
   Stream<String> streamChat({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? model,
   }) async* {
     final modelToUse = model ?? _activeModel;
@@ -272,9 +282,41 @@ class LocalInferenceService extends ChangeNotifier {
       return;
     }
 
+    // Convert multimodal messages to Ollama format:
+    // Ollama uses {"role","content","images":[base64,...]} rather than
+    // OpenAI content arrays.
+    final ollamaMessages = messages.map((msg) {
+      final content = msg['content'];
+      if (content is List) {
+        final textParts = <String>[];
+        final images = <String>[];
+        for (final part in content) {
+          if (part is Map) {
+            if (part['type'] == 'text') {
+              textParts.add(part['text'] as String? ?? '');
+            } else if (part['type'] == 'image_url') {
+              final url =
+                  (part['image_url'] as Map?)?['url'] as String? ?? '';
+              if (url.contains(';base64,')) {
+                images.add(url.split(';base64,')[1]);
+              } else if (url.isNotEmpty) {
+                images.add(url);
+              }
+            }
+          }
+        }
+        return <String, dynamic>{
+          'role': msg['role'],
+          'content': textParts.join(' '),
+          if (images.isNotEmpty) 'images': images,
+        };
+      }
+      return msg;
+    }).toList();
+
     final body = jsonEncode({
       'model': modelToUse,
-      'messages': messages,
+      'messages': ollamaMessages,
       'stream': true,
     });
 
@@ -328,7 +370,7 @@ class LocalInferenceService extends ChangeNotifier {
 
   /// Non-streaming completion.
   Future<String?> chatCompletion({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? model,
   }) async {
     final modelToUse = model ?? _activeModel;

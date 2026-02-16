@@ -255,7 +255,7 @@ class LlamaCppClient(BackendClient):
     async def generate_stream(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Stream tokens from the loaded GGUF model."""
@@ -326,7 +326,7 @@ class LlamaCppClient(BackendClient):
     async def generate(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
         """Non-streaming generation."""

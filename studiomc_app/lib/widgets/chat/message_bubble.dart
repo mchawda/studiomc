@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -41,7 +42,8 @@ class MessageBubble extends StatelessWidget {
               children: [
                 Container(
                   constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.65,
+                    maxWidth: MediaQuery.of(context).size.width *
+                        (MediaQuery.of(context).size.width < 600 ? 0.85 : 0.65),
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                   decoration: BoxDecoration(
@@ -91,13 +93,46 @@ class MessageBubble extends StatelessWidget {
     final textColor = theme.colorScheme.onSurface;
     final parts = _parseContent(message.content);
 
-    if (parts.length == 1 && parts.first.isCode == false) {
-      return _buildStreamingText(theme, parts.first.text, textColor, message.isStreaming);
+    final hasImages = message.images.isNotEmpty;
+
+    final children = <Widget>[];
+
+    // Show attached images
+    if (hasImages) {
+      children.add(
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: message.images.map((dataUrl) {
+            try {
+              final raw = dataUrl.contains(';base64,')
+                  ? dataUrl.split(';base64,')[1]
+                  : dataUrl;
+              final bytes = base64Decode(raw);
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.memory(
+                  bytes,
+                  width: 160,
+                  height: 160,
+                  fit: BoxFit.cover,
+                ),
+              );
+            } catch (_) {
+              return const SizedBox.shrink();
+            }
+          }).toList(),
+        ),
+      );
+      children.add(const SizedBox(height: 8));
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: parts.map((part) {
+    if (parts.length == 1 && parts.first.isCode == false) {
+      children.add(
+        _buildStreamingText(theme, parts.first.text, textColor, message.isStreaming),
+      );
+    } else {
+      children.addAll(parts.map((part) {
         if (part.isCode) {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
@@ -105,7 +140,14 @@ class MessageBubble extends StatelessWidget {
           );
         }
         return _buildStreamingText(theme, part.text, textColor, false);
-      }).toList(),
+      }));
+    }
+
+    if (children.length == 1) return children.first;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
     );
   }
 

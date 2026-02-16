@@ -42,7 +42,7 @@ class StreamGenerator(Protocol):
 
     async def generate_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         ...
@@ -94,7 +94,7 @@ def make_stream_chunk(
 
 async def sse_generate(
     generator: StreamGenerator,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model_name: str,
     *,
     profile: str = "balanced",

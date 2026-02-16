@@ -8,12 +8,14 @@ class DocumentCard extends StatelessWidget {
   final Document document;
   final bool isGridView;
   final VoidCallback? onChat;
+  final VoidCallback? onDelete;
 
   const DocumentCard({
     super.key,
     required this.document,
     this.isGridView = true,
     this.onChat,
+    this.onDelete,
   });
 
   @override
@@ -54,6 +56,23 @@ class DocumentCard extends StatelessWidget {
                   _buildTypeIcon(theme),
                   const Spacer(),
                   _buildStatusBadge(theme, isReady, isProcessing, isError),
+                  if (onDelete != null) ...[
+                    const SizedBox(width: 4),
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: IconButton(
+                        icon: Icon(Icons.delete_outline_rounded,
+                            size: 16, color: theme.colorScheme.error.withValues(alpha: 0.6)),
+                        onPressed: onDelete,
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Delete',
+                        style: IconButton.styleFrom(
+                          foregroundColor: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),
@@ -156,108 +175,101 @@ class DocumentCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
       ),
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 4),
+      elevation: 0,
       child: InkWell(
         onTap: isReady ? onChat : null,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           child: Row(
             children: [
               _buildTypeIcon(theme),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            document.filename,
-                            style: theme.textTheme.titleMedium,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        _buildStatusBadge(theme, isReady, isProcessing, isError),
-                      ],
+                    Text(
+                      document.filename,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 2),
                     Row(
                       children: [
-                        Icon(
-                          Icons.description,
-                          size: 14,
-                          color: theme.colorScheme.secondary,
-                        ),
-                        const SizedBox(width: 4),
                         Text(
                           _formatFileSize(document.bytes),
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.secondary,
+                            fontSize: 11,
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        Icon(
-                          Icons.calendar_today,
-                          size: 14,
-                          color: theme.colorScheme.secondary,
-                        ),
-                        const SizedBox(width: 4),
+                        const SizedBox(width: 8),
                         Text(
                           _formatDate(document.createdAt),
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.secondary,
+                            fontSize: 11,
                           ),
                         ),
                         if (isReady && document.chunkCount > 0) ...[
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 8),
                           Text(
                             '${document.chunkCount} chunks',
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.secondary,
+                              fontSize: 11,
                             ),
                           ),
                         ],
                       ],
                     ),
                     if (isProcessing) ...[
-                      const SizedBox(height: 8),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Preparing knowledge...',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.secondary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          LinearProgressIndicator(
-                            value: document.processingProgress / 100,
-                            backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              theme.colorScheme.tertiary,
-                            ),
-                          ),
-                        ],
+                      const SizedBox(height: 4),
+                      LinearProgressIndicator(
+                        value: document.processingProgress / 100,
+                        backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          theme.colorScheme.tertiary,
+                        ),
                       ),
                     ],
                   ],
                 ),
               ),
+              _buildStatusBadge(theme, isReady, isProcessing, isError),
+              if (onDelete != null) ...[
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: IconButton(
+                    icon: Icon(Icons.delete_outline_rounded,
+                        size: 16, color: theme.colorScheme.error.withValues(alpha: 0.5)),
+                    onPressed: onDelete,
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Delete',
+                  ),
+                ),
+              ],
               if (isReady && onChat != null) ...[
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
+                const SizedBox(width: 2),
+                TextButton.icon(
                   onPressed: onChat,
-                  icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                  icon: const Icon(Icons.chat_bubble_outline, size: 14),
                   label: const Text('Chat'),
-                  style: OutlinedButton.styleFrom(
+                  style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    textStyle: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ),
@@ -286,6 +298,26 @@ class DocumentCard extends StatelessWidget {
         iconColor = Colors.blue;
         iconData = Icons.code;
         break;
+      case DocType.docx:
+        iconColor = Colors.blue.shade700;
+        iconData = Icons.description;
+        break;
+      case DocType.pptx:
+        iconColor = Colors.orange;
+        iconData = Icons.slideshow;
+        break;
+      case DocType.xlsx:
+        iconColor = Colors.green.shade700;
+        iconData = Icons.table_chart;
+        break;
+      case DocType.json:
+        iconColor = Colors.amber.shade700;
+        iconData = Icons.data_object;
+        break;
+      case DocType.image:
+        iconColor = Colors.purple;
+        iconData = Icons.image;
+        break;
     }
 
     return Container(
@@ -307,12 +339,11 @@ class DocumentCard extends StatelessWidget {
     String label;
     Color color;
 
-    if (isProcessing) {
+    if (isReady) {
+      return const SizedBox.shrink();
+    } else if (isProcessing) {
       label = 'Processing';
       color = Colors.amber;
-    } else if (isReady) {
-      label = 'Ready';
-      color = Colors.green;
     } else if (isError) {
       label = 'Error';
       color = Colors.red;

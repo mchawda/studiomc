@@ -98,12 +98,53 @@ class OllamaClient(BackendClient):
             ))
         return models
 
+    # ── Multimodal helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _convert_messages_for_ollama(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Convert OpenAI multimodal format to Ollama format.
+
+        OpenAI: {"role":"user","content":[{"type":"text","text":"..."},
+                  {"type":"image_url","image_url":{"url":"data:image/...;base64,..."}}]}
+        Ollama: {"role":"user","content":"...","images":["<base64>"]}
+        """
+        converted: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Multimodal message — extract text and images
+                text_parts: list[str] = []
+                images: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif part.get("type") == "image_url":
+                            url = part.get("image_url", {}).get("url", "")
+                            # Strip the data-URL prefix to get raw base64
+                            if ";base64," in url:
+                                images.append(url.split(";base64,", 1)[1])
+                            elif url:
+                                images.append(url)
+                ollama_msg: dict[str, Any] = {
+                    "role": msg.get("role", "user"),
+                    "content": " ".join(text_parts),
+                }
+                if images:
+                    ollama_msg["images"] = images
+                converted.append(ollama_msg)
+            else:
+                converted.append(msg)
+        return converted
+
     # ── Generation ────────────────────────────────────────────────────
 
     async def generate_stream(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Stream tokens from Ollama's POST /api/chat (NDJSON).
@@ -112,7 +153,7 @@ class OllamaClient(BackendClient):
         """
         payload: dict[str, Any] = {
             "model": model_id,
-            "messages": messages,
+            "messages": self._convert_messages_for_ollama(messages),
             "stream": True,
         }
         if "temperature" in kwargs and kwargs["temperature"] is not None:
@@ -163,7 +204,7 @@ class OllamaClient(BackendClient):
     async def generate(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
         """Non-streaming generation via streaming under the hood."""

@@ -96,7 +96,7 @@ class BackendClient(abc.ABC):
     async def generate_stream(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Stream tokens as (token, metrics_or_none) tuples.
@@ -109,7 +109,7 @@ class BackendClient(abc.ABC):
     async def generate(
         self,
         model_id: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
         """Non-streaming generation. Returns (text, metrics)."""

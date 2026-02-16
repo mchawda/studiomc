@@ -526,7 +526,7 @@ class InferenceRouter:
 
     async def generate_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, GenerationMetrics | None]]:
         """Route streaming generation to the active backend.
@@ -637,7 +637,7 @@ class InferenceRouter:
 
     async def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> tuple[str, GenerationMetrics]:
         """Route non-streaming generation to the active backend.

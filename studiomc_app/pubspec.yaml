@@ -47,6 +47,10 @@ dependencies:
   shared_preferences: ^2.5.3
   file_picker: ^10.3.10
   path_provider: ^2.1.5
+  sqflite_common_ffi: ^2.4.0+2
+  desktop_drop: ^0.7.0
+  device_info_plus: ^11.3.3
+  fcllama: ^0.0.3
 
 dev_dependencies:
   flutter_test:

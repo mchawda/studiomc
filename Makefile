@@ -12,6 +12,7 @@
 
 .PHONY: help dev services flutter \
         build-services build-app build-macos build-linux \
+        build-ios build-android \
         release-macos release-linux \
         clean clean-services clean-flutter \
         check-deps
@@ -31,6 +32,8 @@ help:
 	@echo "  make build-app        Build services + Flutter app"
 	@echo "  make build-macos      Full macOS build with embedded Python"
 	@echo "  make build-linux      Full Linux build with embedded Python"
+	@echo "  make build-ios        Build iOS app (no Python backend)"
+	@echo "  make build-android    Build Android APK (no Python backend)"
 	@echo ""
 	@echo "Release:"
 	@echo "  make release-macos    Build + create .dmg installer"
@@ -40,9 +43,15 @@ help:
 	@echo "  make clean            Remove all build artifacts"
 	@echo "  make check-deps       Verify toolchain is installed"
 
+# ── Temp directory (keep boot disk free) ────────────────────────────────
+# Flutter/Dart write large compile artifacts to TMPDIR.
+# Redirect to the external drive so the small macOS boot disk isn't filled.
+EXT_TMP := /Volumes/External Drive/system/tmp
+export TMPDIR := $(EXT_TMP)
+
 # ── Development ──────────────────────────────────────────────────────────
 
-dev: services-bg flutter
+dev: _ensure-tmp services-bg flutter
 
 services:
 	@echo "Starting Python services (supervisor)…"
@@ -55,9 +64,12 @@ services-bg:
 	@echo "Waiting for supervisor to come up…"
 	@sleep 3
 
-flutter:
-	@echo "Starting Flutter app…"
+flutter: _ensure-tmp
+	@echo "Starting Flutter app… (TMPDIR=$(TMPDIR))"
 	cd studiomc_app && flutter run -d macos
+
+_ensure-tmp:
+	@mkdir -p "$(EXT_TMP)"
 
 # ── Build ────────────────────────────────────────────────────────────────
 
@@ -72,6 +84,16 @@ build-macos: build-services
 
 build-linux: build-services
 	bash scripts/build/build_app.sh --skip-services
+
+# ── Mobile builds (no Python backend — on-device inference only) ──
+
+build-ios: _ensure-tmp
+	@echo "Building iOS app…"
+	cd studiomc_app && flutter build ios --release
+
+build-android: _ensure-tmp
+	@echo "Building Android APK…"
+	cd studiomc_app && flutter build apk --release --split-per-abi
 
 # ── Release ──────────────────────────────────────────────────────────────
 

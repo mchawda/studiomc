@@ -32,7 +32,7 @@ class InferenceService {
   /// [messages] is a list of `{role, content}` maps.
   /// Returns the assistant's reply as a string, or `null` on failure.
   Future<String?> chatCompletion({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? model,
     bool stream = false,
   }) async {
@@ -110,7 +110,7 @@ class InferenceService {
 
   /// Send a prompt payload over an already-open WebSocket.
   void sendMessage({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? mode,
   }) {
     if (_activeSocket == null) {
@@ -139,7 +139,7 @@ class InferenceService {
   /// Connects WebSocket, sends messages, and yields tokens.
   Stream<String> streamChat({
     required String chatId,
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? mode,
   }) async* {
     yield* connectWebSocket(chatId);

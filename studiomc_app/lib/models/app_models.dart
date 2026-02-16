@@ -17,7 +17,7 @@ enum DownloadStatus { notDownloaded, downloading, paused, verifying, ready, erro
 
 enum DocStatus { uploading, processing, ready, error }
 
-enum DocType { pdf, txt, md }
+enum DocType { pdf, txt, md, docx, pptx, xlsx, json, image }
 
 enum QualityMode { fast, cited, deep }
 
@@ -116,6 +116,9 @@ class Message {
   final String? parentMessageId;
   final bool isStreaming;
 
+  /// Base64-encoded images attached to this message.
+  final List<String> images;
+
   const Message({
     required this.id,
     required this.chatId,
@@ -125,6 +128,7 @@ class Message {
     required this.createdAt,
     this.parentMessageId,
     this.isStreaming = false,
+    this.images = const [],
   });
 }
 

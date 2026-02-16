@@ -178,9 +178,16 @@ class Message(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible chat completion request."""
+    """OpenAI-compatible chat completion request.
+
+    Messages may use multimodal content (images) via the OpenAI format:
+      {"role": "user", "content": [
+        {"type": "text", "text": "..."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+      ]}
+    """
     model: str | None = None
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     temperature: float = 0.7
     max_tokens: int | None = None
     stream: bool = False
