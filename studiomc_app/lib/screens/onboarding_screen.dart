@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../models/app_models.dart';
+import '../services/bundled_inference_service.dart';
 import '../services/settings_service.dart';
 import '../utils/platform_utils.dart';
 import '../widgets/common/studiomc_logo.dart';
@@ -350,9 +351,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _startDownload() async {
     try {
-      // Create models directory in app support
-      final appDir = await getApplicationSupportDirectory();
-      final modelsDir = Directory('${appDir.path}/models');
+      // Use the shared studiomc models directory so both the Flutter app
+      // and the Python inference backend (llamacpp) can find downloaded models.
+      // On mobile, fall back to the app's own support directory.
+      final String modelsDirPath;
+      if (isMobile) {
+        final appDir = await getApplicationSupportDirectory();
+        modelsDirPath = '${appDir.path}/models';
+      } else {
+        modelsDirPath = studiomcModelsDir;
+      }
+      final modelsDir = Directory(modelsDirPath);
       if (!await modelsDir.exists()) {
         await modelsDir.create(recursive: true);
       }
@@ -496,6 +505,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (_recommended != null) {
       final settings = context.read<SettingsService>();
       settings.activeModelId = _recommended!.filename;
+
+      // Tell the inference backend to select this model (if running)
+      if (isDesktop) {
+        final inference = context.read<BundledInferenceService>();
+        final modelId = _recommended!.filename
+            .replaceAll('.gguf', '')
+            .replaceAll('.bin', '')
+            .toLowerCase()
+            .replaceAll(' ', '-');
+        inference.selectModel(modelId).then((_) {
+          debugPrint('[onboarding] Model selected on backend: $modelId');
+        });
+      }
     }
 
     setState(() => _step = OnboardingStep.firstChat);
@@ -671,40 +693,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
-  /// Mobile-specific model recommendations — prioritizes small, fast models
-  /// that won't drain battery or overheat the device.
+  /// Mobile-specific model recommendation — always starts with the smallest
+  /// model for the fastest, safest first experience. Users can upgrade to
+  /// larger models later from the Models screen.
   _RecommendedModel _pickBestMobileModel() {
-    if (_ramMb >= 8000) {
-      return const _RecommendedModel(
-        name: 'Llama 3.2 3B',
-        filename: 'llama-3.2-3b-instruct-q4_k_m.gguf',
-        downloadUrl:
-            'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-        sizeLabel: 'Q4 quantization, ~2.0 GB',
-        speedLabel: 'Fast',
-        explanation: 'Best mobile experience. Capable and responsive on your device.',
-      );
-    } else if (_ramMb >= 4000) {
-      return const _RecommendedModel(
-        name: 'Llama 3.2 1B',
-        filename: 'llama-3.2-1b-instruct-q4_k_m.gguf',
-        downloadUrl:
-            'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-        sizeLabel: 'Q4 quantization, ~0.8 GB',
-        speedLabel: 'Fast',
-        explanation: 'Lightweight model — quick responses, easy on battery.',
-      );
-    } else {
-      return const _RecommendedModel(
-        name: 'Qwen2 0.5B',
-        filename: 'qwen2-0_5b-instruct-q4_k_m.gguf',
-        downloadUrl:
-            'https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_k_m.gguf',
-        sizeLabel: 'Q4 quantization, ~0.4 GB',
-        speedLabel: 'Instant',
-        explanation: 'Ultra-lightweight. Fast responses on any phone.',
-      );
-    }
+    return const _RecommendedModel(
+      name: 'Qwen2 0.5B',
+      filename: 'qwen2-0_5b-instruct-q4_k_m.gguf',
+      downloadUrl:
+          'https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_k_m.gguf',
+      sizeLabel: 'Q4 quantization, ~0.4 GB',
+      speedLabel: 'Instant',
+      explanation:
+          'Ultra-lightweight — instant responses, easy on battery. '
+          'Upgrade to larger models anytime from Settings.',
+    );
   }
 }
 

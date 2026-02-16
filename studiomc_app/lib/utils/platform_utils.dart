@@ -9,3 +9,30 @@ import 'dart:io';
 
 bool get isMobile => Platform.isAndroid || Platform.isIOS;
 bool get isDesktop => Platform.isMacOS || Platform.isLinux || Platform.isWindows;
+
+/// Returns the studiomc data directory that matches the Python backend's
+/// `platformdirs.user_data_dir('studiomc', 'studiomc')`.
+///
+/// This ensures the Flutter app and Python services share the same
+/// models directory, database paths, etc.
+String get studiomcDataDir {
+  if (Platform.isMacOS) {
+    final home = Platform.environment['HOME'] ?? '';
+    return '$home/Library/Application Support/studiomc';
+  } else if (Platform.isWindows) {
+    final appData = Platform.environment['LOCALAPPDATA'] ??
+        Platform.environment['APPDATA'] ??
+        '';
+    return '$appData/studiomc/studiomc';
+  } else {
+    // Linux
+    final home = Platform.environment['HOME'] ?? '';
+    final xdgData =
+        Platform.environment['XDG_DATA_HOME'] ?? '$home/.local/share';
+    return '$xdgData/studiomc';
+  }
+}
+
+/// Returns the shared models directory used by both the Flutter app
+/// and the Python inference backends.
+String get studiomcModelsDir => '$studiomcDataDir/models';

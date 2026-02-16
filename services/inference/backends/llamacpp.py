@@ -163,22 +163,44 @@ class LlamaCppClient(BackendClient):
     # ── Model loading ─────────────────────────────────────────────────
 
     def _resolve_model_path(self, model_id: str) -> Path | None:
-        """Find the GGUF file for a given model id."""
+        """Find the GGUF file for a given model id.
+
+        Handles multiple ID formats:
+        - Absolute file path: /path/to/model.gguf
+        - Full filename: llama-3.2-3b-instruct-q4_k_m.gguf
+        - Stem ID: llama-3.2-3b-instruct-q4_k_m
+        - Partial match: llama-3.2-3b
+        """
         # Direct path
         if os.path.isfile(model_id) and model_id.endswith(".gguf"):
             return Path(model_id)
 
-        # Check discovered models
+        # Normalize: strip .gguf/.bin extension, lowercase, dash-for-space
+        normalized = (
+            model_id.replace(".gguf", "")
+            .replace(".bin", "")
+            .lower()
+            .replace(" ", "-")
+        )
+
+        # Check discovered models (exact or normalized match)
         for m in self._discovered_models:
-            if m["id"] == model_id:
+            if m["id"] == model_id or m["id"] == normalized:
                 return Path(m["path"])
 
         # Search models directory
         for path in _find_gguf_files(self._models_dir):
-            if _model_id_from_path(path) == model_id:
+            stem_id = _model_id_from_path(path)
+            if stem_id == model_id or stem_id == normalized:
                 return path
 
-        # Check by subdirectory name (e.g. ~/.studiomc/models/llama-3.2-3b-q4km/...)
+        # Partial match: model_id is a prefix of the file stem
+        for path in _find_gguf_files(self._models_dir):
+            stem_id = _model_id_from_path(path)
+            if stem_id.startswith(normalized):
+                return path
+
+        # Check by subdirectory name
         subdir = self._models_dir / model_id
         if subdir.is_dir():
             ggufs = list(subdir.glob("*.gguf"))

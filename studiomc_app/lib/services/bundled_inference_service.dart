@@ -49,6 +49,11 @@ class BundledInferenceService extends ChangeNotifier {
 
   /// Initialize: find Python, start the inference service.
   /// On mobile platforms, this is a no-op — mobile uses MobileInferenceService.
+  ///
+  /// Resolution order:
+  ///   1. Check if the service is already running at port 8100 (started by ProcessLauncher)
+  ///   2. Try to start via Python venv (development mode)
+  ///   3. Wait for ProcessLauncher to finish starting the bundled service
   Future<bool> init({String? preferredModel}) async {
     if (isMobile) {
       debugPrint('[splicellm] Skipping — not available on mobile');
@@ -57,24 +62,60 @@ class BundledInferenceService extends ChangeNotifier {
       return false;
     }
 
-    _resolveServicePaths();
-
-    if (_venvPython == null || _servicesDir == null) {
-      debugPrint('[splicellm] Python venv or services dir not found');
-      _available = false;
-      notifyListeners();
-      return false;
-    }
-
-    // Check if the service is already running
+    // 1. Check if service is already running (e.g. started by ProcessLauncher)
     if (await _checkHealth()) {
+      debugPrint('[splicellm] Service already running at $_baseUrl');
       _available = true;
       await _loadModels();
+      await _autoSelectModel(preferredModel);
       notifyListeners();
       return true;
     }
 
-    return await _startService();
+    // 2. Try to start via Python venv (development mode)
+    _resolveServicePaths();
+    if (_venvPython != null && _servicesDir != null) {
+      debugPrint('[splicellm] Starting via Python venv');
+      final started = await _startService();
+      if (started && preferredModel != null) {
+        await _autoSelectModel(preferredModel);
+      }
+      return started;
+    }
+
+    // 3. ProcessLauncher may still be starting the bundled executable.
+    //    Wait for the service to become healthy (up to 25s).
+    debugPrint('[splicellm] Waiting for backend to start...');
+    final healthy =
+        await _waitForHealth(timeout: const Duration(seconds: 25));
+    if (healthy) {
+      debugPrint('[splicellm] Backend is now healthy');
+      _available = true;
+      await _loadModels();
+      await _autoSelectModel(preferredModel);
+      notifyListeners();
+      return true;
+    }
+
+    debugPrint('[splicellm] Backend did not start — inference unavailable');
+    _available = false;
+    notifyListeners();
+    return false;
+  }
+
+  /// Auto-select a model on the backend if one is configured.
+  Future<void> _autoSelectModel(String? preferredModel) async {
+    if (preferredModel == null || preferredModel.isEmpty) return;
+
+    // Strip .gguf extension — the backend uses stem-based IDs
+    final modelId = preferredModel
+        .replaceAll('.gguf', '')
+        .replaceAll('.bin', '')
+        .toLowerCase()
+        .replaceAll(' ', '-');
+
+    debugPrint('[splicellm] Auto-selecting model: $modelId');
+    await selectModel(modelId);
   }
 
   /// Resolve paths to the Python venv and services directory.

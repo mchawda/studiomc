@@ -197,6 +197,11 @@ class _ChatScreenState extends State<ChatScreen> {
         // Mobile: use on-device llama.cpp
         if (mobileInference.available && mobileInference.activeModel != null) {
           _modelName = mobileInference.humanName(mobileInference.activeModel!);
+        } else if (mobileInference.downloadedModels.isNotEmpty) {
+          _modelName = mobileInference.humanName(
+              mobileInference.downloadedModels.first.filename);
+        } else {
+          _modelName = 'No model';
         }
       } else {
         // 1) Ollama (primary for small models)
@@ -575,12 +580,32 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Routing: mobile uses on-device llama.cpp, desktop uses the bundled
       // inference router (port 8100) with Ollama fallback.
-      final useMobile = isMobile && mobileInference.available;
-      final useStudiomc = !isMobile && bundledInference.available;
-      final useOllama = !isMobile && !useStudiomc && localInference.available;
+      var useMobile = isMobile && mobileInference.available;
+      var useStudiomc = !isMobile && bundledInference.available;
+      var useOllama = !isMobile && !useStudiomc && localInference.available;
+
+      // If no backend is available yet, the bundled service may still be
+      // starting. Wait briefly and re-check before showing an error.
+      if (!useMobile && !useOllama && !useStudiomc && !isMobile) {
+        debugPrint('[chat] No backend available yet — waiting for startup...');
+        for (int i = 0; i < 6; i++) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (bundledInference.available) {
+            useStudiomc = true;
+            break;
+          }
+          if (localInference.available) {
+            useOllama = true;
+            break;
+          }
+        }
+      }
+
       if (!useMobile && !useOllama && !useStudiomc) {
         setState(() {
-          _error = 'No inference engine available. Download a model first.';
+          _error = isMobile
+              ? 'No model loaded. Go to Settings → Models to download one.'
+              : 'No inference backend available. Ensure the app services are running.';
         });
         return;
       }

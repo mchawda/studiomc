@@ -56,6 +56,21 @@ void main() async {
   final databaseService = DatabaseService();
   databaseService.warmUp();
 
+  // ── Create per-service API clients ──
+  final supervisorApi = ApiClient(baseUrl: ServiceUrls.supervisor);
+  final modelManagerApi = ApiClient(baseUrl: ServiceUrls.modelManager);
+
+  // ── Start full backend FIRST (desktop only) ──
+  // ProcessLauncher must start before inference services try to connect,
+  // so that BundledInferenceService can detect the running backend.
+  if (isDesktop) {
+    // Fire-and-forget — ProcessLauncher waits up to 30s internally.
+    // BundledInferenceService.init() will independently wait for port 8100.
+    ProcessLauncher.launchBackend().then((_) {
+      supervisorApi.checkAvailable();
+    });
+  }
+
   // ── Initialize inference services (platform-aware) ──
   final bundledInference = BundledInferenceService();
   final localInference = LocalInferenceService();
@@ -70,7 +85,10 @@ void main() async {
       settingsService.activeModelId = mobileInference.activeModel;
     }
   } else {
-    // Desktop: use SpliceLLM + Ollama
+    // Desktop: init Ollama (fast check) and start bundled service in background.
+    // BundledInferenceService.init() runs in background — it waits for the
+    // backend to become healthy and then auto-selects the preferred model.
+    // This avoids blocking the UI on slow backend startup.
     bundledInference.init(preferredModel: settingsService.activeModelId);
     await localInference.init(preferredModel: settingsService.activeModelId);
 
@@ -79,17 +97,6 @@ void main() async {
         localInference.activeModel != null) {
       settingsService.activeModelId = localInference.activeModel;
     }
-  }
-
-  // ── Create per-service API clients ──
-  final supervisorApi = ApiClient(baseUrl: ServiceUrls.supervisor);
-  final modelManagerApi = ApiClient(baseUrl: ServiceUrls.modelManager);
-
-  // Start full backend (desktop only — mobile cannot spawn processes)
-  if (isDesktop) {
-    ProcessLauncher.launchBackend().then((_) {
-      supervisorApi.checkAvailable();
-    });
   }
 
   final supervisorService = SupervisorService();

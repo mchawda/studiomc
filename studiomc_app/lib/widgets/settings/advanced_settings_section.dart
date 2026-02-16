@@ -9,6 +9,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../utils/platform_utils.dart';
+
 /// A frontier API provider config stored in SharedPreferences.
 class FrontierApiConfig {
   final String name;
@@ -221,8 +223,7 @@ class _AdvancedSettingsSectionState extends State<AdvancedSettingsSection> {
       if (file.path == null) return;
 
       setState(() => _importingModel = true);
-      final appDir = await getApplicationSupportDirectory();
-      final modelsDir = Directory('${appDir.path}/models');
+      final modelsDir = Directory(isDesktop ? studiomcModelsDir : '${(await getApplicationSupportDirectory()).path}/models');
       if (!await modelsDir.exists()) await modelsDir.create(recursive: true);
 
       final sourceFile = File(file.path!);
@@ -260,8 +261,7 @@ class _AdvancedSettingsSectionState extends State<AdvancedSettingsSection> {
       }
 
       setState(() => _importingModel = true);
-      final appDir = await getApplicationSupportDirectory();
-      final modelsDir = Directory('${appDir.path}/models');
+      final modelsDir = Directory(isDesktop ? studiomcModelsDir : '${(await getApplicationSupportDirectory()).path}/models');
       if (!await modelsDir.exists()) await modelsDir.create(recursive: true);
 
       final folderName = dirPath.split('/').last;
