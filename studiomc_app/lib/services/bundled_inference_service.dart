@@ -238,8 +238,9 @@ class BundledInferenceService extends ChangeNotifier {
       _joinPath(
           File(Platform.resolvedExecutable).parent.path,
           '..', 'Resources', 'services'),
-      // External drive common location
-      '/Volumes/External Drive/dev/projects/Studiomc/services',
+      // Env-var override for custom dev setups
+      if (Platform.environment['STUDIOMC_SERVICES_PATH'] != null)
+        Platform.environment['STUDIOMC_SERVICES_PATH']!,
     ];
 
     for (final dir in candidates) {
@@ -267,7 +268,9 @@ class BundledInferenceService extends ChangeNotifier {
         debugPrint(
             '[splicellm] Using system Python: $systemPython');
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[splicellm] System Python lookup failed: $e');
+    }
   }
 
   /// Start the Python inference service.
@@ -477,7 +480,8 @@ class BundledInferenceService extends ChangeNotifier {
       final choices = data['choices'] as List<dynamic>?;
       if (choices == null || choices.isEmpty) return null;
       return choices[0]['message']['content'] as String?;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[splicellm] Chat completion error: $e');
       return null;
     }
   }
@@ -507,7 +511,8 @@ class BundledInferenceService extends ChangeNotifier {
       _serverProcess!.kill(ProcessSignal.sigterm);
       try {
         await _serverProcess!.exitCode.timeout(const Duration(seconds: 5));
-      } catch (_) {
+      } catch (e) {
+        debugPrint('[splicellm] Graceful stop timed out, sending SIGKILL: $e');
         _serverProcess!.kill(ProcessSignal.sigkill);
       }
       _serverProcess = null;
@@ -557,7 +562,9 @@ class BundledInferenceService extends ChangeNotifier {
         }
         await Future.delayed(const Duration(seconds: 1));
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[splicellm] Failed to kill existing process on port: $e');
+    }
   }
 
   String _joinPath(String a, String b, [String? c, String? d]) {

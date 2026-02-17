@@ -21,8 +21,14 @@ class ServiceUrls {
 
 /// Reusable HTTP client for communicating with a single backend service.
 ///
-/// Each service creates its own [ApiClient] instance pointed at the correct
-/// port. Provides GET, POST, PUT, DELETE with JSON (de)serialization, file
+/// **Creation pattern**: Services that are provided via `main.dart` receive
+/// an injected [ApiClient] (e.g. `HardwareService`, `ModelManagerService`).
+/// Singleton services (e.g. `SupervisorService`, `InferenceService`) create
+/// their own [ApiClient] internally — these are long-lived and disposed with
+/// the singleton. Avoid creating short-lived [ApiClient]s in hot paths; prefer
+/// reusing the service's instance.
+///
+/// Provides GET, POST, PUT, DELETE with JSON (de)serialization, file
 /// uploads, configurable timeouts, and structured error handling.
 class ApiClient {
   final String baseUrl;

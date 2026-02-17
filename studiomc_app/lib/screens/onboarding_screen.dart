@@ -31,7 +31,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int _ramMb = 0;
   String _cpuName = '';
   int _cpuCores = 0;
-  String _gpuName = '';
+  String _gpuName = ''; // ignore: unused_field — reserved for future GPU-aware recommendations
 
   // Auto-selected model
   _RecommendedModel? _recommended;
@@ -125,7 +125,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         if (isDesktop) ...[
           const SizedBox(height: 12),
           TextButton(
-            onPressed: () => context.go('/chat'),
+            onPressed: () {
+              context.read<SettingsService>().onboardingComplete = true;
+              context.go('/chat');
+            },
             child: const Text('I already have a model'),
           ),
         ],
@@ -372,13 +375,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
       final rec = _recommended!;
       final destFile = File('${modelsDir.path}/${rec.filename}');
+      final expectedBytes = await _fetchRemoteContentLength(rec.downloadUrl);
 
-      // Check for existing file — if already downloaded, show completion
+      // Check for existing file. Only mark complete when we can confirm size.
       int existingBytes = 0;
       if (await destFile.exists()) {
         existingBytes = await destFile.length();
-        // If file is large enough to be a real model (>100MB), treat as done
-        if (existingBytes > 100 * 1024 * 1024) {
+        if (expectedBytes > 0 && existingBytes >= expectedBytes) {
           if (mounted) {
             setState(() {
               _downloadProgress = 1.0;
@@ -432,7 +435,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           }
         }
       } else {
-        _totalBytes = response.contentLength;
+        _totalBytes = expectedBytes > 0 ? expectedBytes : response.contentLength;
         existingBytes = 0; // Server didn't honor Range
       }
 
@@ -511,6 +514,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
+  Future<int> _fetchRemoteContentLength(String url) async {
+    final client = HttpClient();
+    try {
+      final request = await client.openUrl('HEAD', Uri.parse(url));
+      final response = await request.close();
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        return response.contentLength;
+      }
+    } catch (_) {
+      // Ignore and fall back to streaming response metadata.
+    } finally {
+      client.close(force: true);
+    }
+    return -1;
+  }
+
   void _togglePause() {
     setState(() {
       _isPaused = !_isPaused;
@@ -523,9 +542,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   void _goToFirstChat() async {
+    // Mark onboarding as done so the app skips it on future launches
+    final settings = context.read<SettingsService>();
+    settings.onboardingComplete = true;
+
     // Register downloaded model as active so the rest of the app knows
     if (_recommended != null) {
-      final settings = context.read<SettingsService>();
       settings.activeModelId = _recommended!.filename;
 
       if (isMobile) {

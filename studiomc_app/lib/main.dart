@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:go_router/go_router.dart';
 import 'theme/app_theme.dart';
 import 'router/app_router.dart';
 import 'services/api_client.dart';
@@ -74,26 +75,30 @@ void main() async {
       settingsService.activeModelId = mobileInference.activeModel;
     }
   } else {
-    // Desktop: start backend process, then init inference services.
+    // Desktop: start backend + inference services concurrently.
     // ProcessLauncher starts the supervisor which spawns child services
     // (inference on 8100, model_manager on 8101, etc.).
-    // We await it so BundledInferenceService.init() can find the running backend.
+    // BundledInferenceService.init() has its own wait + background retry
+    // for when the backend takes longer than expected (first launch can
+    // be 30-60s due to hardware scan + sequential service startup).
     //
-    // ProcessLauncher.launchBackend() waits up to 30s for the supervisor
-    // health check. The inference service may take a few more seconds after
-    // the supervisor is healthy, so BundledInferenceService.init() has its
-    // own wait + background retry.
-    ProcessLauncher.launchBackend().then((_) {
-      debugPrint('[main] ProcessLauncher completed');
-      supervisorApi.checkAvailable();
+    // We launch these concurrently to avoid blocking the UI. The chat
+    // screen and Discover screen handle "backend starting" state.
+    final backendFuture = ProcessLauncher.launchBackend().then((ok) {
+      debugPrint('[main] ProcessLauncher completed (success=$ok)');
+      if (ok) supervisorApi.checkAvailable();
     });
 
-    // Start Ollama check (fast, independent of bundled backend)
+    // Ollama check is fast and independent of the bundled backend
     await localInference.init(preferredModel: settingsService.activeModelId);
 
-    // Start bundled inference in background — it has its own wait + retry
-    // logic and will keep checking for the backend even after returning.
+    // Bundled inference has its own wait + retry loop
     bundledInference.init(preferredModel: settingsService.activeModelId);
+
+    // Ensure backend launch errors are logged, not silently dropped
+    backendFuture.catchError((e) {
+      debugPrint('[main] Backend launch error: $e');
+    });
 
     if (!settingsService.hasActiveModel &&
         localInference.available &&
@@ -108,6 +113,8 @@ void main() async {
   final documentService = DocumentService();
   final hardwareService = HardwareService(supervisorApi);
   final modelManagerService = ModelManagerService(modelManagerApi);
+
+  final router = buildAppRouter(settingsService);
 
   runApp(
     MultiProvider(
@@ -128,17 +135,42 @@ void main() async {
         ChangeNotifierProvider<MobileInferenceService>.value(
             value: mobileInference),
       ],
-      child: const StudiomcApp(),
+      child: StudiomcApp(router: router),
     ),
   );
 }
 
-class StudiomcApp extends StatelessWidget {
-  const StudiomcApp({super.key});
+class StudiomcApp extends StatefulWidget {
+  final GoRouter router;
+
+  const StudiomcApp({super.key, required this.router});
+
+  @override
+  State<StudiomcApp> createState() => _StudiomcAppState();
+}
+
+class _StudiomcAppState extends State<StudiomcApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      ProcessLauncher.shutdownBackend();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    // Watch SettingsService so theme rebuilds when darkMode changes.
     final settings = context.watch<SettingsService>();
 
     return MaterialApp.router(
@@ -147,7 +179,7 @@ class StudiomcApp extends StatelessWidget {
       theme: AppTheme.lightTheme(),
       darkTheme: AppTheme.darkTheme(),
       themeMode: settings.themeMode,
-      routerConfig: appRouter,
+      routerConfig: widget.router,
     );
   }
 }

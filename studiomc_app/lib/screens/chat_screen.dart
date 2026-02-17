@@ -15,6 +15,7 @@ import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
 import 'package:studiomc_app/services/mobile_inference_service.dart';
 import 'package:studiomc_app/services/orchestrator_service.dart';
+import 'package:studiomc_app/services/process_launcher.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 import 'package:studiomc_app/utils/platform_utils.dart';
 import 'package:studiomc_app/widgets/chat/branch_indicator.dart';
@@ -604,6 +605,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _error = 'Connecting to backend — this may take a moment on first launch...';
         });
 
+        // Attempt to (re)launch the supervisor if startup failed earlier.
+        await ProcessLauncher.launchBackend();
+
         // Direct health recheck (catches backends that started late)
         final nowAvailable = await bundledInference.recheckAvailability();
         if (nowAvailable) {
@@ -639,10 +643,13 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       if (!useMobile && !useOllama && !useStudiomc) {
+        final launchReason = ProcessLauncher.lastLaunchError;
         setState(() {
           _error = isMobile
               ? 'No model loaded. Go to Settings → Models to download one.'
-              : 'No inference backend available. Go to Models and download a model, then try again.';
+              : launchReason != null && launchReason.isNotEmpty
+                  ? 'No inference backend available. $launchReason'
+                  : 'No inference backend available. Go to Models and download a model, then try again.';
         });
         return;
       }

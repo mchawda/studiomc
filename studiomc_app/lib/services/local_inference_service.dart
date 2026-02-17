@@ -82,12 +82,13 @@ class LocalInferenceService extends ChangeNotifier {
       }
       notifyListeners();
       return true;
-    } catch (_) {
-      // Try to start Ollama
+    } catch (e) {
+      debugPrint('[ollama] Init failed: $e — trying to start Ollama');
       try {
         await _startOllama();
         return await init(preferredModel: preferredModel); // retry once
-      } catch (_) {
+      } catch (e2) {
+        debugPrint('[ollama] Ollama start also failed: $e2');
         _available = false;
         return false;
       }
@@ -131,7 +132,9 @@ class LocalInferenceService extends ChangeNotifier {
         headers: {'content-type': 'application/json'},
         body: jsonEncode({'name': tag, 'stream': false}),
       );
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[ollama] Pull model $tag failed: $e');
+    }
   }
 
   /// Pull a model from Ollama and stream progress. Returns a stream
@@ -185,7 +188,8 @@ class LocalInferenceService extends ChangeNotifier {
         return true;
       }
       return false;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ollama] Delete model $tag failed: $e');
       return false;
     }
   }
@@ -389,7 +393,8 @@ class LocalInferenceService extends ChangeNotifier {
       if (resp.statusCode != 200) return null;
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       return (data['message'] as Map<String, dynamic>?)?['content'] as String?;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[ollama] Chat completion error: $e');
       return null;
     }
   }

@@ -22,9 +22,12 @@ class ProcessLauncher {
   ProcessLauncher._();
 
   static Process? _backendProcess;
-  static bool _launched = false;
+  static bool _launched = false; // ignore: unused_field — tracks launch state for debugging
+  static Future<bool>? _launchInFlight;
+  static String? _lastLaunchError;
 
   static bool get isManaged => _backendProcess != null;
+  static String? get lastLaunchError => _lastLaunchError;
 
   // ── Public API ──────────────────────────────────────────────────────────
 
@@ -36,14 +39,34 @@ class ProcessLauncher {
       _log('Skipping backend launch — not available on mobile');
       return false;
     }
-    if (_launched) return _backendProcess != null;
-    _launched = true;
 
-    // 1. Check if supervisor is already running (e.g. started in terminal)
+    // Fast path: service already healthy (even if we didn't launch it).
     if (await _isAlreadyRunning()) {
+      _launched = true;
+      _lastLaunchError = null;
       _log('Supervisor already running at ${ServiceUrls.supervisor}');
       return true;
     }
+
+    // De-duplicate concurrent launch attempts.
+    if (_launchInFlight != null) {
+      return await _launchInFlight!;
+    }
+
+    _launchInFlight = _launchBackendInternal();
+    try {
+      return await _launchInFlight!;
+    } finally {
+      _launchInFlight = null;
+    }
+  }
+
+  static Future<bool> _launchBackendInternal() async {
+    _launched = true;
+    _lastLaunchError = null;
+
+    // 1. Check if supervisor is already running (e.g. started in terminal)
+    if (await _isAlreadyRunning()) return true;
 
     // 2. Try bundled executable (production)
     final bundled = _findBundledExecutable();
@@ -60,7 +83,9 @@ class ProcessLauncher {
           workingDirectory: devSetup.servicesDir);
     }
 
-    _log('ERROR: Could not find backend to launch');
+    _launched = false; // allow future retries
+    _lastLaunchError = 'Could not find bundled backend or development Python runtime.';
+    _log('ERROR: $_lastLaunchError');
     return false;
   }
 
@@ -107,6 +132,16 @@ class ProcessLauncher {
     String? workingDirectory,
   }) async {
     try {
+      // Fresh machines can lose executable bit when files are copied/unpacked.
+      if (!Platform.isWindows) {
+        final exeFile = File(executable);
+        if (exeFile.existsSync()) {
+          try {
+            await Process.run('chmod', ['+x', executable]);
+          } catch (_) {}
+        }
+      }
+
       final env = Map<String, String>.from(Platform.environment);
       env['PYTHONUNBUFFERED'] = '1';
 
@@ -130,19 +165,34 @@ class ProcessLauncher {
       _backendProcess!.exitCode.then((code) {
         _log('Backend process exited with code $code');
         _backendProcess = null;
+        _launched = false; // allow clean relaunch after crash/exit
+        if (code != 0 && _lastLaunchError == null) {
+          _lastLaunchError = 'Backend exited unexpectedly with code $code.';
+        }
       });
 
       // Check for early crash — if process exits within 3s, it failed to start
       await Future.delayed(const Duration(seconds: 3));
       if (_backendProcess == null) {
-        _log('ERROR: Backend process crashed immediately after launch');
+        _launched = false;
+        _lastLaunchError = 'Backend process crashed immediately after launch.';
+        _log('ERROR: $_lastLaunchError');
         return false;
       }
 
       // Wait for supervisor to become healthy (up to 45s — first launch
       // does hardware scan + starts 7 services sequentially)
-      return await _waitForHealthy(timeout: const Duration(seconds: 45));
+      final healthy = await _waitForHealthy(timeout: const Duration(seconds: 45));
+      if (!healthy) {
+        _launched = false;
+        _lastLaunchError = 'Backend started but supervisor health check timed out.';
+      } else {
+        _lastLaunchError = null;
+      }
+      return healthy;
     } catch (e) {
+      _launched = false;
+      _lastLaunchError = 'Failed to launch backend: $e';
       _log('Failed to launch backend: $e');
       return false;
     }
@@ -235,16 +285,10 @@ class ProcessLauncher {
       }
     }
 
-    // Fallback: try common known paths
-    final knownPaths = [
-      // Relative to where the project likely lives
-      '/Volumes/External Drive/dev/projects/Studiomc/services',
-    ];
-
-    for (final path in knownPaths) {
-      if (Directory(path).existsSync()) {
-        return _resolveDevPython(path);
-      }
+    // Fallback: check STUDIOMC_SERVICES_PATH env var
+    final envPath = Platform.environment['STUDIOMC_SERVICES_PATH'];
+    if (envPath != null && Directory(envPath).existsSync()) {
+      return _resolveDevPython(envPath);
     }
 
     return null;
@@ -271,7 +315,9 @@ class ProcessLauncher {
         if (result.exitCode == 0) {
           return _DevPython(python: p, appPy: appPy, servicesDir: servicesDir);
         }
-      } catch (_) {}
+      } catch (e) {
+        _log('Python lookup failed for $p: $e');
+      }
     }
 
     return null;

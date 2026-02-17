@@ -16,11 +16,15 @@ class SettingsService extends ChangeNotifier {
   static const _keyPrefetchDepth = 'settings_prefetch_depth';
   static const _keyThreads = 'settings_threads';
   static const _keyActiveModelId = 'settings_active_model_id';
+  static const _keyOnboardingComplete = 'settings_onboarding_complete';
 
   late final SharedPreferences _prefs;
 
   // Model
   String? _activeModelId;
+
+  // Onboarding
+  bool _onboardingComplete = false;
 
   // Privacy
   bool _localOnly = true;
@@ -43,6 +47,7 @@ class SettingsService extends ChangeNotifier {
   // --- Getters ---
   String? get activeModelId => _activeModelId;
   bool get hasActiveModel => _activeModelId != null && _activeModelId!.isNotEmpty;
+  bool get onboardingComplete => _onboardingComplete;
   bool get localOnly => _localOnly;
   bool get shareAnonymousData => _shareAnonymousData;
   bool get cloudConsent => _cloudConsent;
@@ -71,6 +76,7 @@ class SettingsService extends ChangeNotifier {
     _prefetchDepth = _prefs.getDouble(_keyPrefetchDepth) ?? 4;
     _threads = _prefs.getDouble(_keyThreads) ?? 4;
     _activeModelId = _prefs.getString(_keyActiveModelId);
+    _onboardingComplete = _prefs.getBool(_keyOnboardingComplete) ?? false;
 
     notifyListeners();
   }
@@ -84,6 +90,12 @@ class SettingsService extends ChangeNotifier {
     } else {
       _prefs.remove(_keyActiveModelId);
     }
+    notifyListeners();
+  }
+
+  set onboardingComplete(bool value) {
+    _onboardingComplete = value;
+    _prefs.setBool(_keyOnboardingComplete, value);
     notifyListeners();
   }
 

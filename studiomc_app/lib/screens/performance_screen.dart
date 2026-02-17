@@ -14,12 +14,6 @@ import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/hardware_service.dart';
 import 'package:studiomc_app/services/supervisor_service.dart';
-import 'package:studiomc_app/widgets/performance/auto_tune_card.dart';
-import 'package:studiomc_app/widgets/performance/performance_history.dart';
-import 'package:studiomc_app/widgets/performance/performance_metrics.dart';
-import 'package:studiomc_app/widgets/performance/speed_rating_badge.dart';
-import 'package:studiomc_app/widgets/performance/suggestion_card.dart';
-import 'package:studiomc_app/widgets/performance/system_status.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 
 class PerformanceScreen extends StatefulWidget {
@@ -858,7 +852,7 @@ class _EmptyPerformanceState extends StatelessWidget {
               const SizedBox(height: 24),
 
               Text(
-                'Ready to benchmark',
+                'No benchmarks yet',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
@@ -867,7 +861,9 @@ class _EmptyPerformanceState extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Send your first message to start collecting\nperformance metrics automatically.',
+                'Performance metrics are collected automatically\n'
+                'when you chat. Start a conversation to see\n'
+                'speed, memory, and throughput data here.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(
                   fontSize: 13,

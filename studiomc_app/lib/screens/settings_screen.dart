@@ -12,7 +12,9 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_client.dart';
 import '../services/database_service.dart';
+import '../services/process_launcher.dart';
 import '../services/settings_service.dart';
+import '../services/supervisor_service.dart';
 import '../widgets/settings/advanced_settings_section.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -24,6 +26,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _showAdvanced = false;
+  bool _showBackendDiagnostics = true;
   bool _showPersonalization = false;
   bool _showCodeSection = false;
   final TextEditingController _modelIdController = TextEditingController();
@@ -44,11 +47,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int? _editingFactId;
   final TextEditingController _editFactController = TextEditingController();
 
+  bool _diagnosticsLoading = false;
+  String? _diagnosticsError;
+  final Map<String, bool> _serviceHealth = {
+    'supervisor': false,
+    'inference': false,
+    'model_manager': false,
+    'documents': false,
+    'orchestrator': false,
+  };
+  List<ServiceInfo> _supervisorServices = [];
+
   @override
   void initState() {
     super.initState();
     _loadPersistedState();
     _loadFacts();
+    _refreshBackendDiagnostics();
   }
 
   Future<void> _loadFacts() async {
@@ -253,6 +268,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  Future<void> _refreshBackendDiagnostics() async {
+    if (!mounted) return;
+    setState(() {
+      _diagnosticsLoading = true;
+      _diagnosticsError = null;
+    });
+
+    try {
+      final checks = await Future.wait<bool>([
+        _checkHealthUrl(ServiceUrls.supervisor),
+        _checkHealthUrl(ServiceUrls.inference),
+        _checkHealthUrl(ServiceUrls.modelManager),
+        _checkHealthUrl(ServiceUrls.documents),
+        _checkHealthUrl(ServiceUrls.orchestrator),
+      ]);
+
+      final supervisor = context.read<SupervisorService>();
+      final status = await supervisor.getStatus();
+
+      if (!mounted) return;
+      setState(() {
+        _serviceHealth['supervisor'] = checks[0];
+        _serviceHealth['inference'] = checks[1];
+        _serviceHealth['model_manager'] = checks[2];
+        _serviceHealth['documents'] = checks[3];
+        _serviceHealth['orchestrator'] = checks[4];
+        _supervisorServices = status?.services ?? [];
+        _diagnosticsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _diagnosticsLoading = false;
+        _diagnosticsError = e.toString();
+      });
+    }
+  }
+
+  Future<bool> _checkHealthUrl(String baseUrl) async {
+    try {
+      final resp = await http
+          .get(Uri.parse('$baseUrl/health'))
+          .timeout(const Duration(seconds: 2));
+      return resp.statusCode >= 200 && resp.statusCode < 300;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _retryBackendStartup() async {
+    if (!mounted) return;
+    setState(() {
+      _diagnosticsLoading = true;
+      _diagnosticsError = null;
+    });
+
+    final ok = await ProcessLauncher.launchBackend();
+    await Future.delayed(const Duration(seconds: 1));
+    await _refreshBackendDiagnostics();
+    if (!mounted) return;
+
+    final launchError = ProcessLauncher.lastLaunchError;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Backend restart triggered.'
+              : (launchError ?? 'Backend failed to start.'),
+          style: GoogleFonts.inter(fontSize: 10),
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -418,6 +508,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
 
+                // ── Backend Diagnostics ──
+                _compactCard(
+                  theme,
+                  onTap: () => setState(
+                      () => _showBackendDiagnostics = !_showBackendDiagnostics),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Backend Diagnostics',
+                                style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600)),
+                            Text('Health, services, and startup troubleshooting',
+                                style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    color: theme.colorScheme.secondary)),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        _showBackendDiagnostics
+                            ? Icons.keyboard_arrow_up
+                            : Icons.keyboard_arrow_down,
+                        size: 18,
+                        color: theme.colorScheme.secondary,
+                      ),
+                    ],
+                  ),
+                ),
+                if (_showBackendDiagnostics) ...[
+                  const SizedBox(height: 8),
+                  _buildBackendDiagnostics(theme),
+                ],
+
+                const SizedBox(height: 8),
+
                 // ── Personalization ──
                 _compactCard(
                   theme,
@@ -581,6 +710,213 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 12),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBackendDiagnostics(ThemeData theme) {
+    final launchError = ProcessLauncher.lastLaunchError;
+    final inferenceOk = _serviceHealth['inference'] == true;
+    final supervisorOk = _serviceHealth['supervisor'] == true;
+    final overallOk = inferenceOk && supervisorOk;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  overallOk ? Icons.check_circle : Icons.error_outline,
+                  size: 16,
+                  color: overallOk
+                      ? const Color(0xFF10B981)
+                      : theme.colorScheme.error,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    overallOk
+                        ? 'Inference backend is healthy'
+                        : 'Backend issue detected',
+                    style: GoogleFonts.inter(
+                        fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                if (_diagnosticsLoading)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 1.6),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            _serviceStatusRow(theme, 'Supervisor (8110)',
+                _serviceHealth['supervisor'] == true),
+            _serviceStatusRow(theme, 'Inference (8100)',
+                _serviceHealth['inference'] == true),
+            _serviceStatusRow(theme, 'Model Manager (8101)',
+                _serviceHealth['model_manager'] == true),
+            _serviceStatusRow(theme, 'Documents (8102)',
+                _serviceHealth['documents'] == true),
+            _serviceStatusRow(theme, 'Orchestrator (8105)',
+                _serviceHealth['orchestrator'] == true),
+            if (_supervisorServices.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Supervisor service view',
+                style: GoogleFonts.inter(
+                    fontSize: 10,
+                    color: theme.colorScheme.secondary,
+                    fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              ..._supervisorServices.map((s) => _serviceStatusRow(
+                    theme,
+                    '${s.name} (${s.port})',
+                    s.running,
+                  )),
+            ],
+            if (_diagnosticsError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _diagnosticsError!,
+                style: GoogleFonts.inter(
+                    fontSize: 9, color: theme.colorScheme.error),
+              ),
+            ],
+            if (launchError != null && launchError.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.error.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Last launch error: $launchError',
+                  style: GoogleFonts.inter(
+                      fontSize: 9, color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 30,
+                    child: OutlinedButton.icon(
+                      onPressed: _diagnosticsLoading
+                          ? null
+                          : _refreshBackendDiagnostics,
+                      icon: const Icon(Icons.refresh, size: 14),
+                      label: Text('Refresh',
+                          style: GoogleFonts.inter(fontSize: 10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 30,
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          _diagnosticsLoading ? null : _copyBackendDiagnostics,
+                      icon: const Icon(Icons.copy_rounded, size: 14),
+                      label: Text('Copy diagnostics',
+                          style: GoogleFonts.inter(fontSize: 10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 30,
+                    child: FilledButton.icon(
+                      onPressed:
+                          _diagnosticsLoading ? null : _retryBackendStartup,
+                      icon: const Icon(Icons.play_arrow_rounded, size: 14),
+                      label: Text('Retry backend',
+                          style: GoogleFonts.inter(fontSize: 10)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyBackendDiagnostics() async {
+    final now = DateTime.now().toIso8601String();
+    final launchError = ProcessLauncher.lastLaunchError;
+    final sb = StringBuffer()
+      ..writeln('Studiomc Backend Diagnostics')
+      ..writeln('Timestamp: $now')
+      ..writeln('Supervisor: ${_serviceHealth['supervisor'] == true ? 'online' : 'offline'}')
+      ..writeln('Inference: ${_serviceHealth['inference'] == true ? 'online' : 'offline'}')
+      ..writeln('Model Manager: ${_serviceHealth['model_manager'] == true ? 'online' : 'offline'}')
+      ..writeln('Documents: ${_serviceHealth['documents'] == true ? 'online' : 'offline'}')
+      ..writeln('Orchestrator: ${_serviceHealth['orchestrator'] == true ? 'online' : 'offline'}');
+
+    if (_supervisorServices.isNotEmpty) {
+      sb.writeln('Supervisor services:');
+      for (final s in _supervisorServices) {
+        sb.writeln('- ${s.name} (${s.port}): ${s.running ? 'running' : 'stopped'}');
+      }
+    }
+
+    if (launchError != null && launchError.isNotEmpty) {
+      sb.writeln('Last launch error: $launchError');
+    }
+
+    await Clipboard.setData(ClipboardData(text: sb.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Diagnostics copied',
+            style: GoogleFonts.inter(fontSize: 10)),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  Widget _serviceStatusRow(ThemeData theme, String label, bool ok) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Icon(
+            ok ? Icons.circle : Icons.circle_outlined,
+            size: 10,
+            color: ok ? const Color(0xFF10B981) : theme.colorScheme.secondary,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              label,
+              style: GoogleFonts.inter(fontSize: 10),
+            ),
+          ),
+          Text(
+            ok ? 'Online' : 'Offline',
+            style: GoogleFonts.inter(
+              fontSize: 9,
+              color: ok ? const Color(0xFF10B981) : theme.colorScheme.secondary,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],

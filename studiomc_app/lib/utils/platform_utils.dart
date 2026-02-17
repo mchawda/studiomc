@@ -35,4 +35,12 @@ String get studiomcDataDir {
 
 /// Returns the shared models directory used by both the Flutter app
 /// and the Python inference backends.
+///
+/// Model file layout:
+///   - Flutter onboarding/Discover: `models/<filename>.gguf`  (flat)
+///   - Model Manager backend:       `models/<model_id>/<file>.gguf`  (nested)
+///
+/// The LlamaCpp backend uses `rglob("*.gguf")` so both layouts are
+/// discovered automatically. Keep this in mind when checking for
+/// installed models — a file may exist at either depth.
 String get studiomcModelsDir => '$studiomcDataDir/models';

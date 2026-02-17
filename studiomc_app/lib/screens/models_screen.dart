@@ -213,6 +213,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
   /// Probes backends in the background without blocking UI rendering.
   Future<void> _probeBackendsInBackground() async {
+    // Capture service references synchronously before any async gap
     final local = context.read<LocalInferenceService>();
     final bundled = context.read<BundledInferenceService>();
 
@@ -231,8 +232,12 @@ class _ModelsScreenState extends State<ModelsScreen> {
       }),
     ]);
 
+    if (!mounted) return;
+
     if (bundled.available) await _loadBackendModels();
+    if (!mounted) return;
     await _loadAdapters();
+    if (!mounted) return;
 
     if (!local.available && !bundled.available) {
       _error = 'Backend still starting. You can still download models below.';
@@ -261,7 +266,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
   Future<void> _loadAdapters() async {
     if (!mounted) return;
-    setState(() => _adaptersLoading = true);
+    if (mounted) setState(() => _adaptersLoading = true);
 
     try {
       final training = TrainingService();
@@ -452,11 +457,26 @@ class _ModelsScreenState extends State<ModelsScreen> {
     final filePath = '${modelsDir.path}/$filename';
     final file = File(filePath);
 
-    // Skip if already downloaded
-    if (file.existsSync() && file.lengthSync() > 0) {
-      debugPrint('[discover] Model already exists at $filePath');
-      if (mounted) setState(() => _downloadProgress[tag] = 1.0);
-      return;
+    // Validate existing file against remote size when available.
+    final expectedBytes = await _fetchRemoteContentLength(url);
+    if (file.existsSync()) {
+      final existingBytes = file.lengthSync();
+      if (expectedBytes > 0 && existingBytes >= expectedBytes) {
+        debugPrint('[discover] Model already complete at $filePath');
+        if (mounted) setState(() => _downloadProgress[tag] = 1.0);
+        return;
+      }
+      if (expectedBytes > 0 && existingBytes > 0 && existingBytes < expectedBytes) {
+        // Remove partial file so a retry does not get treated as complete.
+        try {
+          file.deleteSync();
+        } catch (_) {}
+      } else if (expectedBytes <= 0 && existingBytes > 100 * 1024 * 1024) {
+        // Fallback heuristic when remote size is unavailable.
+        debugPrint('[discover] Using existing large model file at $filePath');
+        if (mounted) setState(() => _downloadProgress[tag] = 1.0);
+        return;
+      }
     }
 
     debugPrint('[discover] Downloading $url -> $filePath');
@@ -526,6 +546,23 @@ class _ModelsScreenState extends State<ModelsScreen> {
     } finally {
       client.close();
     }
+  }
+
+  /// Best-effort remote content length lookup.
+  Future<int> _fetchRemoteContentLength(String url) async {
+    final client = HttpClient();
+    try {
+      final request = await client.openUrl('HEAD', Uri.parse(url));
+      final response = await request.close();
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        return response.contentLength;
+      }
+    } catch (_) {
+      // Ignore; caller will fallback to heuristic checks.
+    } finally {
+      client.close(force: true);
+    }
+    return -1;
   }
 
   Future<void> _deleteModel(OllamaModel model) async {
