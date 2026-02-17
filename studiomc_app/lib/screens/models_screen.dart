@@ -33,6 +33,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
   // Download progress per tag
   final Map<String, double> _downloadProgress = {};
   final Map<String, bool> _downloading = {};
+  final Map<String, String> _downloadErrors = {};
 
   // Personalized adapters from the training service
   List<Map<String, dynamic>> _adapters = [];
@@ -287,52 +288,63 @@ class _ModelsScreenState extends State<ModelsScreen> {
     // "llama3.2" matches "llama3.2:latest"
     if (installed.contains('$base:latest')) return true;
 
-    // Also check if the GGUF file exists locally
+    // Also check if the GGUF file exists locally and is large enough
+    // to be a real model (> 100MB). This prevents partial downloads
+    // from being considered "installed".
     final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
     if (curated?.ggufFilename != null) {
       final file = File('$studiomcModelsDir/${curated!.ggufFilename}');
-      if (file.existsSync() && file.lengthSync() > 0) return true;
+      if (file.existsSync() && file.lengthSync() > 100 * 1024 * 1024) {
+        return true;
+      }
     }
 
     return false;
   }
 
   Future<void> _downloadModel(String tag) async {
+    debugPrint('[download] _downloadModel called for tag: $tag');
     final local = context.read<LocalInferenceService>();
     final bundled = context.read<BundledInferenceService>();
     final curated = _curatedModels.where((c) => c.tag == tag).firstOrNull;
+    debugPrint('[download] curated found: ${curated != null}, downloadUrl: ${curated?.downloadUrl != null}, ggufFilename: ${curated?.ggufFilename}');
 
     setState(() {
       _downloading[tag] = true;
       _downloadProgress[tag] = 0.0;
+      _downloadErrors.remove(tag);
     });
+    debugPrint('[download] setState done, entering try block');
 
     try {
-      if (local.available) {
-        // Path 1: Use Ollama directly
-        await for (final progress in local.pullModelWithProgress(tag)) {
-          if (!mounted) return;
-          setState(() => _downloadProgress[tag] = progress);
-        }
-      } else if (curated?.downloadUrl != null && curated?.ggufFilename != null) {
-        // Path 2: Direct GGUF download from HuggingFace (no Ollama needed)
+      if (curated?.downloadUrl != null && curated?.ggufFilename != null) {
+        debugPrint('[download] Path 1: Direct GGUF download');
+        // Path 1: Direct GGUF download from HuggingFace (works for everyone)
         await _downloadGgufDirect(
           tag: tag,
           url: curated!.downloadUrl!,
           filename: curated.ggufFilename!,
         );
+        debugPrint('[download] GGUF download completed');
 
-        // Tell the inference backend to select this model
+        // Tell the inference backend to load this model
         if (bundled.available) {
           final modelId = curated.ggufFilename!
               .replaceAll('.gguf', '')
               .replaceAll('.bin', '')
               .toLowerCase()
               .replaceAll(' ', '-');
+          debugPrint('[download] Selecting model: $modelId');
           await bundled.selectModel(modelId);
         }
+      } else if (local.available) {
+        // Path 2: Ollama pull (only for models without direct URLs, e.g. large models)
+        await for (final progress in local.pullModelWithProgress(tag)) {
+          if (!mounted) return;
+          setState(() => _downloadProgress[tag] = progress);
+        }
       } else {
-        // Path 3: Model manager backend (port 8101) for large or unknown models
+        // Path 3: Model manager backend for large models without direct URLs
         final hfRepo = curated?.hfRepo ?? tag;
         final modelName = curated?.name ?? tag;
 
@@ -374,14 +386,22 @@ class _ModelsScreenState extends State<ModelsScreen> {
           throw Exception('Failed to start download');
         }
       }
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('[download] ERROR for $tag: $e');
+      debugPrint('[download] Stack trace: $st');
       if (mounted) {
+        setState(() => _downloadErrors[tag] = e.toString());
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Download failed for $tag: $e')),
+          SnackBar(
+            content: Text('Download failed: $e'),
+            duration: const Duration(seconds: 5),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
         );
       }
     }
 
+    debugPrint('[download] Refreshing model lists');
     // Refresh model lists
     await _loadBackendModels();
 
@@ -391,6 +411,26 @@ class _ModelsScreenState extends State<ModelsScreen> {
         _downloadProgress.remove(tag);
       });
     }
+  }
+
+  /// Check available disk space at [path] in bytes.
+  int _availableDiskSpace(String path) {
+    try {
+      final stat = FileStat.statSync(path);
+      if (stat.type == FileSystemEntityType.notFound) return 0;
+      // Use the parent directory's filesystem stats
+      final result = Process.runSync('df', ['-k', path]);
+      if (result.exitCode == 0) {
+        final lines = (result.stdout as String).trim().split('\n');
+        if (lines.length >= 2) {
+          final parts = lines.last.split(RegExp(r'\s+'));
+          if (parts.length >= 4) {
+            return int.tryParse(parts[3]) ?? 0;  // Available in 1K blocks
+          }
+        }
+      }
+    } catch (_) {}
+    return 0;  // Unknown — let the download attempt proceed
   }
 
   /// Download a GGUF file directly from HuggingFace to the shared models dir.
@@ -418,32 +458,65 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
     final client = HttpClient();
     try {
+      debugPrint('[discover] Creating HTTP request...');
       final request = await client.getUrl(Uri.parse(url));
+      debugPrint('[discover] Closing request (awaiting response)...');
       final response = await request.close();
+      debugPrint('[discover] Response status: ${response.statusCode}, contentLength: ${response.contentLength}');
 
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
 
       final totalBytes = response.contentLength;
+
+      // Check disk space before starting download
+      if (totalBytes > 0) {
+        final availableKB = _availableDiskSpace(modelsDir.path);
+        final availableBytes = availableKB * 1024;
+        final requiredBytes = totalBytes + (500 * 1024 * 1024); // 500MB buffer
+        if (availableBytes > 0 && availableBytes < requiredBytes) {
+          final availGB = (availableBytes / (1024 * 1024 * 1024)).toStringAsFixed(1);
+          final needGB = (totalBytes / (1024 * 1024 * 1024)).toStringAsFixed(1);
+          throw Exception(
+            'Not enough disk space. Need ${needGB}GB but only ${availGB}GB available. '
+            'Free up space or delete unused models.',
+          );
+        }
+      }
+
       int receivedBytes = 0;
 
       final sink = file.openWrite();
-      await for (final chunk in response) {
-        sink.add(chunk);
-        receivedBytes += chunk.length;
-        if (totalBytes > 0 && mounted) {
-          setState(() =>
-              _downloadProgress[tag] = receivedBytes / totalBytes);
+      try {
+        await for (final chunk in response) {
+          sink.add(chunk);
+          receivedBytes += chunk.length;
+          if (totalBytes > 0 && mounted) {
+            setState(() =>
+                _downloadProgress[tag] = receivedBytes / totalBytes);
+          }
         }
+        await sink.flush();
+      } finally {
+        await sink.close();
       }
-      await sink.flush();
-      await sink.close();
+
+      // Verify the download completed fully
+      if (totalBytes > 0 && receivedBytes < totalBytes) {
+        if (file.existsSync()) file.deleteSync();
+        throw Exception(
+          'Download incomplete: got ${(receivedBytes / (1024 * 1024)).toStringAsFixed(0)}MB '
+          'of ${(totalBytes / (1024 * 1024)).toStringAsFixed(0)}MB. Check disk space.',
+        );
+      }
 
       debugPrint('[discover] Download complete: $filePath (${receivedBytes} bytes)');
     } catch (e) {
       // Clean up partial file
-      if (file.existsSync()) file.deleteSync();
+      if (file.existsSync()) {
+        try { file.deleteSync(); } catch (_) {}
+      }
       rethrow;
     } finally {
       client.close();
@@ -705,10 +778,12 @@ class _ModelsScreenState extends State<ModelsScreen> {
         .toSet();
 
     // Filter curated to only show uninstalled (check both Ollama + backend)
+    // Keep models that are currently downloading visible so the progress bar stays
     final available = _curatedModels
         .where((c) =>
-            !_isInstalled(c.tag, installedTags) &&
-            !backendInstalledIds.contains(c.tag.toLowerCase()))
+            _downloading[c.tag] == true ||
+            (!_isInstalled(c.tag, installedTags) &&
+             !backendInstalledIds.contains(c.tag.toLowerCase())))
         .toList();
 
     // Partition adapters: active first, then inactive
@@ -864,8 +939,18 @@ class _ModelsScreenState extends State<ModelsScreen> {
                   ],
 
                   // ── Installed Models ──
-                  _buildSectionHeader(theme, 'Installed',
-                      count: installed.length + _backendModels.length),
+                  Builder(builder: (_) {
+                    final nonOllamaBackend = _backendModels.where((m) {
+                      final backend = m['backend'] as String? ?? '';
+                      if (backend == 'ollama') return false;
+                      final id = m['id'] as String? ?? '';
+                      final bmid = m['backend_model_id'] as String? ?? '';
+                      return !installedTags.contains(id) &&
+                             !installedTags.contains(bmid);
+                    }).length;
+                    return _buildSectionHeader(theme, 'Installed',
+                        count: installed.length + nonOllamaBackend);
+                  }),
                   const SizedBox(height: 4),
                   if (installed.isEmpty && _backendModels.isEmpty)
                     _buildEmpty(theme, Icons.download_outlined,
@@ -884,8 +969,17 @@ class _ModelsScreenState extends State<ModelsScreen> {
                         )),
                     // Backend models (from inference service, not in Ollama)
                     ..._backendModels
-                        .where((m) =>
-                            !installedTags.contains(m['id'] as String? ?? ''))
+                        .where((m) {
+                          final id = m['id'] as String? ?? '';
+                          final backendModelId = m['backend_model_id'] as String? ?? '';
+                          final backend = m['backend'] as String? ?? '';
+                          // Skip Ollama models — already shown above from local service
+                          if (backend == 'ollama') return false;
+                          // Skip if already shown in Ollama list
+                          if (installedTags.contains(id)) return false;
+                          if (installedTags.contains(backendModelId)) return false;
+                          return true;
+                        })
                         .map((m) => _BackendModelCard(
                               model: m,
                               isActive:
@@ -912,6 +1006,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
                           entry: c,
                           isDownloading: _downloading[c.tag] == true,
                           progress: _downloadProgress[c.tag] ?? 0,
+                          error: _downloadErrors[c.tag],
                           onDownload: () => _downloadModel(c.tag),
                         )),
 
@@ -1768,12 +1863,14 @@ class _DiscoverCard extends StatelessWidget {
   final _CuratedEntry entry;
   final bool isDownloading;
   final double progress;
+  final String? error;
   final VoidCallback onDownload;
 
   const _DiscoverCard({
     required this.entry,
     required this.isDownloading,
     required this.progress,
+    this.error,
     required this.onDownload,
   });
 
@@ -1900,6 +1997,18 @@ class _DiscoverCard extends StatelessWidget {
                 valueColor: AlwaysStoppedAnimation<Color>(
                   theme.colorScheme.primary,
                 ),
+              ),
+            ),
+          ],
+          if (error != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Error: $error',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 9,
+                color: theme.colorScheme.error,
               ),
             ),
           ],

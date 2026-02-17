@@ -170,19 +170,62 @@ class BundledInferenceService extends ChangeNotifier {
     return false;
   }
 
-  /// Auto-select a model on the backend if one is configured.
+  /// Auto-select a model on the backend.
+  ///
+  /// Tries the preferred model first. If that fails (e.g. GGUF not loaded),
+  /// falls back to the first Ollama model, then the first available model.
   Future<void> _autoSelectModel(String? preferredModel) async {
-    if (preferredModel == null || preferredModel.isEmpty) return;
+    await _loadModels();
 
-    // Strip .gguf extension — the backend uses stem-based IDs
-    final modelId = preferredModel
-        .replaceAll('.gguf', '')
-        .replaceAll('.bin', '')
-        .toLowerCase()
-        .replaceAll(' ', '-');
+    // Strategy: try preferred model first, then Ollama (most reliable),
+    // then any available model. For each, verify the selection actually worked.
 
-    debugPrint('[splicellm] Auto-selecting model: $modelId');
-    await selectModel(modelId);
+    // 1. Try preferred model
+    if (preferredModel != null && preferredModel.isNotEmpty) {
+      // Check if it matches an Ollama model first (more reliable)
+      final ollamaMatch = _localModels
+          .where((id) =>
+              id.startsWith('ollama/') &&
+              id.toLowerCase().contains(preferredModel.toLowerCase().split(':').first))
+          .firstOrNull;
+
+      if (ollamaMatch != null) {
+        debugPrint('[splicellm] Preferred model matches Ollama: $ollamaMatch');
+        final ok = await selectModel(ollamaMatch);
+        if (ok) return;
+      }
+
+      // Try the raw model ID
+      final modelId = preferredModel
+          .replaceAll('.gguf', '')
+          .replaceAll('.bin', '')
+          .toLowerCase()
+          .replaceAll(' ', '-');
+
+      debugPrint('[splicellm] Auto-selecting preferred model: $modelId');
+      final ok = await selectModel(modelId);
+      if (ok) return;
+      debugPrint('[splicellm] Preferred model selection failed');
+    }
+
+    // 2. Fallback: pick the first Ollama model (most reliable)
+    final ollamaModel = _localModels
+        .where((id) => id.startsWith('ollama/'))
+        .firstOrNull;
+    if (ollamaModel != null) {
+      debugPrint('[splicellm] Falling back to Ollama model: $ollamaModel');
+      final ok = await selectModel(ollamaModel);
+      if (ok) return;
+    }
+
+    // 3. Last resort: any available model
+    for (final model in _localModels) {
+      debugPrint('[splicellm] Trying model: $model');
+      final ok = await selectModel(model);
+      if (ok) return;
+    }
+
+    debugPrint('[splicellm] No model could be selected');
   }
 
   /// Resolve paths to the Python venv and services directory.

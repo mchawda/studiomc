@@ -137,9 +137,8 @@ class LlamaCppClient(BackendClient):
 
     async def list_models(self) -> list[UnifiedModel]:
         """Return discovered GGUF models."""
-        # Re-scan if empty
-        if not self._discovered_models:
-            await self.probe()
+        # Always re-scan to pick up newly downloaded files
+        await self.probe()
 
         result: list[UnifiedModel] = []
         for m in self._discovered_models:

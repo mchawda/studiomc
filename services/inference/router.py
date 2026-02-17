@@ -300,10 +300,6 @@ class InferenceRouter:
             # If backend is specified, use it directly
             if resolved_backend and resolved_backend in self._backends:
                 client = self._backends[resolved_backend]
-                self._active_backend = client
-                self._active_backend_name = resolved_backend
-                self._active_model_id = model_id
-                self._active_backend_model_id = backend_model_id
 
                 # For llamacpp backend, load the GGUF model directly
                 if resolved_backend == "llamacpp" and isinstance(
@@ -312,8 +308,11 @@ class InferenceRouter:
                     loaded = await client.load_model(backend_model_id)
                     if not loaded:
                         logger.warning(
-                            "llamacpp model load failed for %s",
+                            "llamacpp model load failed for %s — not setting as active",
                             backend_model_id,
+                        )
+                        raise ValueError(
+                            f"Failed to load model {backend_model_id} on llamacpp"
                         )
 
                 # For SpliceLLM (studiomc backend), use safe_switch
@@ -325,10 +324,18 @@ class InferenceRouter:
                     )
                     if not result.success:
                         logger.warning(
-                            "SpliceLLM safe_switch failed: %s", result.error
+                            "SpliceLLM safe_switch failed: %s — not setting as active",
+                            result.error,
                         )
-                        # Don't raise — the error is logged and the router
-                        # can still serve from previously loaded model
+                        raise ValueError(
+                            f"Failed to load model {backend_model_id} on studiomc: {result.error}"
+                        )
+
+                # Only set active AFTER successful load
+                self._active_backend = client
+                self._active_backend_name = resolved_backend
+                self._active_model_id = model_id
+                self._active_backend_model_id = backend_model_id
 
                 logger.info(
                     "Selected model %s on backend %s",
@@ -358,6 +365,20 @@ class InferenceRouter:
                             or m.id == model_id
                             or m.name == model_id
                         ):
+                            # For llamacpp, verify the model can be loaded
+                            if bname == "llamacpp" and isinstance(
+                                client, LlamaCppClient
+                            ):
+                                loaded = await client.load_model(
+                                    m.backend_model_id
+                                )
+                                if not loaded:
+                                    logger.warning(
+                                        "llamacpp: model %s found but failed to load, skipping",
+                                        m.backend_model_id,
+                                    )
+                                    continue
+
                             self._active_backend = client
                             self._active_backend_name = bname
                             self._active_model_id = m.id
@@ -423,21 +444,27 @@ class InferenceRouter:
             # Last resort: SpliceLLM engine (safetensors only)
             studiomc_client = self._backends.get("studiomc")
             if isinstance(studiomc_client, StudiomcClient):
-                self._active_backend = studiomc_client
-                self._active_backend_name = "studiomc"
-                self._active_model_id = f"studiomc/{model_id}"
-                self._active_backend_model_id = model_id
                 result = await self._safe_load_studiomc(model_id, model_id)
-                if not result.success:
+                if result.success:
+                    self._active_backend = studiomc_client
+                    self._active_backend_name = "studiomc"
+                    self._active_model_id = f"studiomc/{model_id}"
+                    self._active_backend_model_id = model_id
+                    logger.info(
+                        "Loaded model %s via SpliceLLM fallback", model_id
+                    )
+                    return {
+                        "model_id": f"studiomc/{model_id}",
+                        "backend": "studiomc",
+                        "backend_model_id": model_id,
+                    }
+                else:
                     logger.warning("Fallback SpliceLLM load failed: %s", result.error)
-                logger.info(
-                    "Falling back to SpliceLLM for model %s", model_id
-                )
-                return {
-                    "model_id": f"studiomc/{model_id}",
-                    "backend": "studiomc",
-                    "backend_model_id": model_id,
-                }
+
+            # Nothing worked — raise an error
+            raise ValueError(
+                f"Model '{model_id}' not found or could not be loaded on any backend"
+            )
 
     async def _safe_load_studiomc(
         self,
