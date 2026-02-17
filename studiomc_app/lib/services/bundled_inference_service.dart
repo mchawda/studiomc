@@ -3,7 +3,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -28,7 +27,6 @@ class BundledInferenceService extends ChangeNotifier {
 
   final http.Client _http = http.Client();
 
-  Process? _serverProcess;
   bool _available = false;
   bool _starting = false;
   String? _activeModel;
@@ -43,20 +41,20 @@ class BundledInferenceService extends ChangeNotifier {
   List<String> get localModels => List.unmodifiable(_localModels);
   double get tokPerS => _tokPerS;
 
-  /// Path to the Python venv on the external drive (or bundled location).
-  String? _venvPython;
-  String? _servicesDir;
-
   String? _preferredModel;
 
-  /// Initialize: find Python, start the inference service.
+  /// Initialize: wait for the inference service to become available.
   /// On mobile platforms, this is a no-op — mobile uses MobileInferenceService.
   ///
+  /// ProcessLauncher is responsible for starting the backend (supervisor +
+  /// child services). This class only DETECTS the running service; it never
+  /// launches its own process to avoid the race condition where both
+  /// ProcessLauncher and this class compete to own port 8100.
+  ///
   /// Resolution order:
-  ///   1. Check if the service is already running at port 8100 (started by ProcessLauncher)
-  ///   2. Try to start via Python venv (development mode)
-  ///   3. Wait for ProcessLauncher to finish starting the bundled service
-  ///   4. If still not ready, start a background retry loop
+  ///   1. Check if already running at port 8100
+  ///   2. Wait up to 60s for ProcessLauncher to bring it online
+  ///   3. Start a background retry loop (handles slow first-launch)
   Future<bool> init({String? preferredModel}) async {
     if (isMobile) {
       debugPrint('[splicellm] Skipping — not available on mobile');
@@ -67,7 +65,7 @@ class BundledInferenceService extends ChangeNotifier {
 
     _preferredModel = preferredModel;
 
-    // 1. Check if service is already running (e.g. started by ProcessLauncher)
+    // 1. Check if service is already running
     if (await _checkHealth()) {
       debugPrint('[splicellm] Service already running at $_baseUrl');
       _available = true;
@@ -77,28 +75,16 @@ class BundledInferenceService extends ChangeNotifier {
       return true;
     }
 
-    // 2. Try to start via Python venv (development mode)
-    _resolveServicePaths();
-    if (_venvPython != null && _servicesDir != null) {
-      debugPrint('[splicellm] Starting via Python venv');
-      final started = await _startService();
-      if (started && preferredModel != null) {
-        await _autoSelectModel(preferredModel);
-      }
-      return started;
-    }
-
-    // 3. ProcessLauncher may still be starting the bundled executable.
-    //    Wait for the service to become healthy (up to 45s — supervisor does
-    //    a full hardware scan + starts 7 child services sequentially).
-    debugPrint('[splicellm] Waiting for backend to start...');
+    // 2. ProcessLauncher is starting the supervisor which spawns inference
+    //    as a child service. Wait for it to become healthy.
+    debugPrint('[splicellm] Waiting for inference service on port $_port...');
     _starting = true;
     notifyListeners();
 
     final healthy =
         await _waitForHealth(timeout: const Duration(seconds: 60));
     if (healthy) {
-      debugPrint('[splicellm] Backend is now healthy');
+      debugPrint('[splicellm] Inference service is now healthy');
       _available = true;
       _starting = false;
       await _loadModels();
@@ -107,9 +93,9 @@ class BundledInferenceService extends ChangeNotifier {
       return true;
     }
 
-    // 4. Still not ready — start background retry loop so the service
+    // 3. Still not ready — start background retry loop so the service
     //    can be detected later (e.g. when user finishes onboarding).
-    debugPrint('[splicellm] Backend not ready yet — continuing background retry');
+    debugPrint('[splicellm] Inference not ready yet — continuing background retry');
     _starting = true;
     _available = false;
     notifyListeners();
@@ -226,119 +212,6 @@ class BundledInferenceService extends ChangeNotifier {
     }
 
     debugPrint('[splicellm] No model could be selected');
-  }
-
-  /// Resolve paths to the Python venv and services directory.
-  void _resolveServicePaths() {
-    // Try multiple locations for the services directory
-    final candidates = <String>[
-      // Development: relative to the Flutter project
-      _joinPath(Directory.current.path, '..', 'services'),
-      // Built app: bundled in Resources
-      _joinPath(
-          File(Platform.resolvedExecutable).parent.path,
-          '..', 'Resources', 'services'),
-      // Env-var override for custom dev setups
-      if (Platform.environment['STUDIOMC_SERVICES_PATH'] != null)
-        Platform.environment['STUDIOMC_SERVICES_PATH']!,
-    ];
-
-    for (final dir in candidates) {
-      final normalized = _normalizePath(dir);
-      if (Directory(normalized).existsSync()) {
-        _servicesDir = normalized;
-
-        // Check for venv inside services dir
-        final venvPython = _joinPath(normalized, '.venv', 'bin', 'python3');
-        if (File(venvPython).existsSync()) {
-          _venvPython = venvPython;
-          debugPrint('[splicellm] Found venv at $venvPython');
-          debugPrint('[splicellm] Services dir: $normalized');
-          return;
-        }
-      }
-    }
-
-    // Fallback: try system Python
-    try {
-      final result = Process.runSync('which', ['python3']);
-      if (result.exitCode == 0) {
-        final systemPython = (result.stdout as String).trim();
-        _venvPython = systemPython;
-        debugPrint(
-            '[splicellm] Using system Python: $systemPython');
-      }
-    } catch (e) {
-      debugPrint('[splicellm] System Python lookup failed: $e');
-    }
-  }
-
-  /// Start the Python inference service.
-  Future<bool> _startService() async {
-    if (_starting) return false;
-    _starting = true;
-    notifyListeners();
-
-    // Kill any existing process on the port
-    await _killExisting();
-
-    try {
-      debugPrint('[splicellm] Starting inference service...');
-      debugPrint('[splicellm] Python: $_venvPython');
-      debugPrint('[splicellm] Working dir: $_servicesDir');
-
-      _serverProcess = await Process.start(
-        _venvPython!,
-        [
-          '-m', 'uvicorn',
-          'inference.app:app',
-          '--host', '127.0.0.1',
-          '--port', '$_port',
-        ],
-        workingDirectory: _servicesDir,
-        environment: {
-          ...Platform.environment,
-          'PYTHONPATH': _servicesDir!,
-        },
-      );
-
-      _serverProcess!.stdout
-          .transform(utf8.decoder)
-          .listen((data) => debugPrint('[splicellm] $data'));
-      _serverProcess!.stderr
-          .transform(utf8.decoder)
-          .listen((data) => debugPrint('[studiomc-engine:err] $data'));
-
-      _serverProcess!.exitCode.then((code) {
-        debugPrint('[splicellm] Service exited: $code');
-        _available = false;
-        _serverProcess = null;
-        notifyListeners();
-      });
-
-      // Wait for the service to become healthy
-      final healthy =
-          await _waitForHealth(timeout: const Duration(seconds: 30));
-
-      if (healthy) {
-        _available = true;
-        await _loadModels();
-        debugPrint('[splicellm] Service ready on port $_port');
-      } else {
-        debugPrint('[splicellm] Service failed to become healthy');
-        _available = false;
-      }
-
-      _starting = false;
-      notifyListeners();
-      return healthy;
-    } catch (e) {
-      debugPrint('[splicellm] Failed to start: $e');
-      _starting = false;
-      _available = false;
-      notifyListeners();
-      return false;
-    }
   }
 
   /// Load model list from the service.
@@ -505,21 +378,6 @@ class BundledInferenceService extends ChangeNotifier {
     return name.isEmpty ? path.split('/').last : name;
   }
 
-  /// Stop the service.
-  Future<void> stopServer() async {
-    if (_serverProcess != null) {
-      _serverProcess!.kill(ProcessSignal.sigterm);
-      try {
-        await _serverProcess!.exitCode.timeout(const Duration(seconds: 5));
-      } catch (e) {
-        debugPrint('[splicellm] Graceful stop timed out, sending SIGKILL: $e');
-        _serverProcess!.kill(ProcessSignal.sigkill);
-      }
-      _serverProcess = null;
-    }
-    _available = false;
-  }
-
   // Switch model (restarts if needed).
   Future<bool> switchModel(String modelId) async {
     return await selectModel(modelId);
@@ -550,44 +408,9 @@ class BundledInferenceService extends ChangeNotifier {
     return false;
   }
 
-  Future<void> _killExisting() async {
-    try {
-      final result = await Process.run('lsof', ['-ti:$_port']);
-      if (result.exitCode == 0) {
-        final pids = (result.stdout as String).trim().split('\n');
-        for (final pid in pids) {
-          if (pid.isNotEmpty) {
-            await Process.run('kill', ['-9', pid]);
-          }
-        }
-        await Future.delayed(const Duration(seconds: 1));
-      }
-    } catch (e) {
-      debugPrint('[splicellm] Failed to kill existing process on port: $e');
-    }
-  }
-
-  String _joinPath(String a, String b, [String? c, String? d]) {
-    var result = '$a/$b';
-    if (c != null) result = '$result/$c';
-    if (d != null) result = '$result/$d';
-    return result;
-  }
-
-  String _normalizePath(String path) {
-    try {
-      final dir = Directory(path);
-      if (dir.existsSync()) {
-        return dir.resolveSymbolicLinksSync();
-      }
-    } catch (_) {}
-    return path;
-  }
-
   @override
   void dispose() {
     _retryTimer?.cancel();
-    stopServer();
     _http.close();
     super.dispose();
   }

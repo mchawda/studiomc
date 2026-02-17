@@ -644,13 +644,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
       if (!useMobile && !useOllama && !useStudiomc) {
         final launchReason = ProcessLauncher.lastLaunchError;
-        setState(() {
-          _error = isMobile
-              ? 'No model loaded. Go to Settings → Models to download one.'
-              : launchReason != null && launchReason.isNotEmpty
-                  ? 'No inference backend available. $launchReason'
-                  : 'No inference backend available. Go to Models and download a model, then try again.';
-        });
+        final supervisorUp = await ProcessLauncher.isSupervisorHealthy();
+        String errorMsg;
+        if (isMobile) {
+          errorMsg = 'No model loaded. Go to Settings → Models to download one.';
+        } else if (launchReason != null && launchReason.isNotEmpty) {
+          errorMsg = 'Backend error: $launchReason';
+        } else if (supervisorUp) {
+          errorMsg = 'Backend is running but the inference service is not responding. '
+              'Try restarting the app or check Settings → Diagnostics.';
+        } else {
+          errorMsg = 'Backend failed to start. Try restarting the app.';
+        }
+        setState(() => _error = errorMsg);
         return;
       }
 

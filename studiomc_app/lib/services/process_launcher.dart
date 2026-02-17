@@ -29,6 +29,9 @@ class ProcessLauncher {
   static bool get isManaged => _backendProcess != null;
   static String? get lastLaunchError => _lastLaunchError;
 
+  /// Quick check if the supervisor on port 8110 responds to /health.
+  static Future<bool> isSupervisorHealthy() => _isAlreadyRunning();
+
   // ── Public API ──────────────────────────────────────────────────────────
 
   /// Launch the backend and wait until the supervisor is healthy.
