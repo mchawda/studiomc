@@ -132,8 +132,16 @@ class ProcessLauncher {
         _backendProcess = null;
       });
 
-      // Wait for supervisor to become healthy (up to 30s)
-      return await _waitForHealthy(timeout: const Duration(seconds: 30));
+      // Check for early crash — if process exits within 3s, it failed to start
+      await Future.delayed(const Duration(seconds: 3));
+      if (_backendProcess == null) {
+        _log('ERROR: Backend process crashed immediately after launch');
+        return false;
+      }
+
+      // Wait for supervisor to become healthy (up to 45s — first launch
+      // does hardware scan + starts 7 services sequentially)
+      return await _waitForHealthy(timeout: const Duration(seconds: 45));
     } catch (e) {
       _log('Failed to launch backend: $e');
       return false;
@@ -193,8 +201,11 @@ class ProcessLauncher {
     }
 
     for (final path in candidates) {
-      if (File(path).existsSync()) return path;
+      final exists = File(path).existsSync();
+      _log('Checking bundled path: $path (exists: $exists)');
+      if (exists) return path;
     }
+    _log('No bundled executable found');
     return null;
   }
 
@@ -267,6 +278,7 @@ class ProcessLauncher {
   }
 
   static void _log(String message) {
+    debugPrint('[launcher] $message');
     developer.log(message, name: 'studiomc.launcher');
   }
 }

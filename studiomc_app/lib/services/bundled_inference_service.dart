@@ -96,7 +96,7 @@ class BundledInferenceService extends ChangeNotifier {
     notifyListeners();
 
     final healthy =
-        await _waitForHealth(timeout: const Duration(seconds: 45));
+        await _waitForHealth(timeout: const Duration(seconds: 60));
     if (healthy) {
       debugPrint('[splicellm] Backend is now healthy');
       _available = true;

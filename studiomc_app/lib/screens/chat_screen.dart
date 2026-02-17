@@ -599,13 +599,19 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!useMobile && !useOllama && !useStudiomc && !isMobile) {
         debugPrint('[chat] No backend available — rechecking...');
 
+        // Show a connecting message while we wait
+        setState(() {
+          _error = 'Connecting to backend — this may take a moment on first launch...';
+        });
+
         // Direct health recheck (catches backends that started late)
         final nowAvailable = await bundledInference.recheckAvailability();
         if (nowAvailable) {
           useStudiomc = true;
         } else {
-          // Wait briefly in case it's still starting
-          for (int i = 0; i < 8; i++) {
+          // Wait for backend — on first launch the supervisor does a hardware
+          // scan + starts 7 services sequentially, which can take 30-60s.
+          for (int i = 0; i < 20; i++) {
             await Future.delayed(const Duration(seconds: 2));
             if (bundledInference.available) {
               useStudiomc = true;
@@ -625,13 +631,18 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           }
         }
+
+        // Clear the connecting message if we found a backend
+        if (useStudiomc || useOllama) {
+          setState(() => _error = null);
+        }
       }
 
       if (!useMobile && !useOllama && !useStudiomc) {
         setState(() {
           _error = isMobile
               ? 'No model loaded. Go to Settings → Models to download one.'
-              : 'No inference backend available. The backend may still be starting — try again in a moment.';
+              : 'No inference backend available. Go to Models and download a model, then try again.';
         });
         return;
       }

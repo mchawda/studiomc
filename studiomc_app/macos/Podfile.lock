@@ -1,21 +1,15 @@
 PODS:
   - FlutterMacOS (1.0.0)
-  - llm_llamacpp (0.1.7):
-    - FlutterMacOS
 
 DEPENDENCIES:
   - FlutterMacOS (from `Flutter/ephemeral`)
-  - llm_llamacpp (from `Flutter/ephemeral/.symlinks/plugins/llm_llamacpp/macos`)
 
 EXTERNAL SOURCES:
   FlutterMacOS:
     :path: Flutter/ephemeral
-  llm_llamacpp:
-    :path: Flutter/ephemeral/.symlinks/plugins/llm_llamacpp/macos
 
 SPEC CHECKSUMS:
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
-  llm_llamacpp: 0521e4e6270554b97027db77cc76fd318bf18612
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009
 
