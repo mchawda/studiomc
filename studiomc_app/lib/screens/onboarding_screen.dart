@@ -41,6 +41,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String _downloadStatus = '';
   String? _downloadError;
   bool _isPaused = false;
+  bool _downloadComplete = false;
   int _totalBytes = 0; // remembered across pause/resume cycles
 
   @override
@@ -372,13 +373,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final rec = _recommended!;
       final destFile = File('${modelsDir.path}/${rec.filename}');
 
-      // Check for existing (possibly partial) file
+      // Check for existing file — if already downloaded, show completion
       int existingBytes = 0;
       if (await destFile.exists()) {
         existingBytes = await destFile.length();
-        // If we know total and file is already complete, skip to chat
-        if (_totalBytes > 0 && existingBytes >= _totalBytes) {
-          if (mounted) _goToFirstChat();
+        // If file is large enough to be a real model (>100MB), treat as done
+        if (existingBytes > 100 * 1024 * 1024) {
+          if (mounted) {
+            setState(() {
+              _downloadProgress = 1.0;
+              _downloadStatus = 'Model already downloaded';
+              _downloadComplete = true;
+            });
+          }
           return;
         }
       }
@@ -387,7 +394,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       // immediate disk writes (no buffering that can hang on flush).
       final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 30);
-      // HuggingFace redirects to CDN — follow automatically (default)
       client.autoUncompress = false;
 
       final request = await client.getUrl(Uri.parse(rec.downloadUrl));
@@ -402,7 +408,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       // Handle Range responses
       if (response.statusCode == 416) {
         // Range not satisfiable — file is already complete
-        if (mounted) _goToFirstChat();
+        if (mounted) {
+          setState(() {
+            _downloadProgress = 1.0;
+            _downloadStatus = 'Download complete';
+            _downloadComplete = true;
+          });
+        }
         return;
       }
 
@@ -480,7 +492,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         return;
       }
 
-      if (mounted && !_isPaused) _goToFirstChat();
+      // Download finished — show completion state (don't auto-navigate)
+      if (mounted && !_isPaused) {
+        setState(() {
+          _downloadProgress = 1.0;
+          _downloadStatus = 'Download complete';
+          _downloadComplete = true;
+        });
+      }
     } catch (e) {
       if (_isPaused) return; // Don't show error on user-initiated pause
       if (mounted) {
@@ -536,6 +555,47 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Widget _buildDownload(ThemeData theme) {
+    // ── Download complete: show success state with Continue button ──
+    if (_downloadComplete) {
+      return Column(
+        key: const ValueKey('download-done'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle_rounded,
+              size: 48, color: Colors.green.shade400),
+          const SizedBox(height: 16),
+          Text('Download Complete',
+              style: theme.textTheme.headlineMedium,
+              textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          Text(
+              '${_recommended?.name ?? "Model"} is ready to use',
+              style: theme.textTheme.bodyLarge
+                  ?.copyWith(color: theme.colorScheme.secondary),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 24),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: 1.0,
+              minHeight: 6,
+              color: Colors.green.shade400,
+            ),
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _goToFirstChat,
+              icon: const Icon(Icons.chat_rounded, size: 18),
+              label: const Text('Start Chatting'),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // ── Downloading / paused / error states ──
     return Column(
       key: const ValueKey('download'),
       mainAxisSize: MainAxisSize.min,
@@ -561,7 +621,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 : theme.colorScheme.primary,
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
+        // Percentage indicator
+        if (_downloadProgress > 0)
+          Text(
+              '${(_downloadProgress * 100).toInt()}%',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.primary,
+              )),
+        const SizedBox(height: 4),
         Text(
             _downloadStatus.isNotEmpty
                 ? _downloadStatus
@@ -569,7 +638,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             style: theme.textTheme.bodySmall),
         const SizedBox(height: 16),
 
-        // ── Pause / Resume button ──
+        // Pause / Resume button
         if (_downloadError == null)
           SizedBox(
             width: double.infinity,

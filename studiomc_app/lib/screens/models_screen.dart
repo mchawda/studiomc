@@ -186,54 +186,59 @@ class _ModelsScreenState extends State<ModelsScreen> {
     });
 
     if (isMobile) {
-      // Mobile: on-device inference via flutter_llama
       final mobile = context.read<MobileInferenceService>();
       if (!mobile.available) {
         await mobile.init();
       }
     } else {
-      // Desktop: Ollama + SpliceLLM
-      try {
-        final local = context.read<LocalInferenceService>();
-        if (!local.available) {
-          await local.init();
-        }
-      } catch (_) {}
-
-      try {
-        final bundled = context.read<BundledInferenceService>();
-        if (!bundled.available) {
-          // Try a fresh health check — backend may have started after init
-          await bundled.recheckAvailability();
-        }
-        if (!bundled.available) {
-          await bundled.init();
-        }
-        if (bundled.available) {
-          await _loadBackendModels();
-        }
-      } catch (_) {}
-
+      // Show UI immediately — curated models are hardcoded and need no backend.
+      // Check backend availability in the background without blocking.
       final local = context.read<LocalInferenceService>();
       final bundled = context.read<BundledInferenceService>();
-      if (!local.available && !bundled.available) {
-        // Backend may still be starting — wait briefly before showing error
-        for (int i = 0; i < 5; i++) {
-          await Future.delayed(const Duration(seconds: 2));
-          if (bundled.available || local.available) break;
-        }
-        if (!local.available && !bundled.available) {
-          _error = 'Backend still starting. You can still download models below.';
-        }
-        if (bundled.available) {
-          await _loadBackendModels();
-        }
-      }
 
-      await _loadAdapters();
+      // Quick non-blocking check: if already available, load models
+      if (local.available || bundled.available) {
+        if (bundled.available) await _loadBackendModels();
+        await _loadAdapters();
+      } else {
+        // Show UI now, probe backends in background
+        if (mounted) setState(() => _isLoading = false);
+        _probeBackendsInBackground();
+        return;
+      }
     }
 
     if (mounted) setState(() => _isLoading = false);
+  }
+
+  /// Probes backends in the background without blocking UI rendering.
+  Future<void> _probeBackendsInBackground() async {
+    final local = context.read<LocalInferenceService>();
+    final bundled = context.read<BundledInferenceService>();
+
+    // Try init in parallel — these have their own timeouts
+    await Future.wait([
+      Future(() async {
+        try {
+          if (!local.available) await local.init();
+        } catch (_) {}
+      }),
+      Future(() async {
+        try {
+          if (!bundled.available) await bundled.recheckAvailability();
+          if (!bundled.available) await bundled.init();
+        } catch (_) {}
+      }),
+    ]);
+
+    if (bundled.available) await _loadBackendModels();
+    await _loadAdapters();
+
+    if (!local.available && !bundled.available) {
+      _error = 'Backend still starting. You can still download models below.';
+    }
+
+    if (mounted) setState(() {});
   }
 
   /// Fetch model list from the bundled inference service (/v1/models).
