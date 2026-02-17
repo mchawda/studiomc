@@ -594,19 +594,35 @@ class _ChatScreenState extends State<ChatScreen> {
       var useStudiomc = !isMobile && bundledInference.available;
       var useOllama = !isMobile && !useStudiomc && localInference.available;
 
-      // If no backend is available yet, the bundled service may still be
-      // starting. Wait briefly and re-check before showing an error.
+      // If no backend is available yet, do a fresh health check — the backend
+      // may have started after init() timed out (e.g. during onboarding).
       if (!useMobile && !useOllama && !useStudiomc && !isMobile) {
-        debugPrint('[chat] No backend available yet — waiting for startup...');
-        for (int i = 0; i < 6; i++) {
-          await Future.delayed(const Duration(seconds: 2));
-          if (bundledInference.available) {
-            useStudiomc = true;
-            break;
-          }
-          if (localInference.available) {
-            useOllama = true;
-            break;
+        debugPrint('[chat] No backend available — rechecking...');
+
+        // Direct health recheck (catches backends that started late)
+        final nowAvailable = await bundledInference.recheckAvailability();
+        if (nowAvailable) {
+          useStudiomc = true;
+        } else {
+          // Wait briefly in case it's still starting
+          for (int i = 0; i < 8; i++) {
+            await Future.delayed(const Duration(seconds: 2));
+            if (bundledInference.available) {
+              useStudiomc = true;
+              break;
+            }
+            if (localInference.available) {
+              useOllama = true;
+              break;
+            }
+            // Recheck health every other iteration
+            if (i % 2 == 1) {
+              final ok = await bundledInference.recheckAvailability();
+              if (ok) {
+                useStudiomc = true;
+                break;
+              }
+            }
           }
         }
       }
@@ -615,7 +631,7 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() {
           _error = isMobile
               ? 'No model loaded. Go to Settings → Models to download one.'
-              : 'No inference backend available. Ensure the app services are running.';
+              : 'No inference backend available. The backend may still be starting — try again in a moment.';
         });
         return;
       }

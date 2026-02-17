@@ -47,6 +47,8 @@ class BundledInferenceService extends ChangeNotifier {
   String? _venvPython;
   String? _servicesDir;
 
+  String? _preferredModel;
+
   /// Initialize: find Python, start the inference service.
   /// On mobile platforms, this is a no-op — mobile uses MobileInferenceService.
   ///
@@ -54,6 +56,7 @@ class BundledInferenceService extends ChangeNotifier {
   ///   1. Check if the service is already running at port 8100 (started by ProcessLauncher)
   ///   2. Try to start via Python venv (development mode)
   ///   3. Wait for ProcessLauncher to finish starting the bundled service
+  ///   4. If still not ready, start a background retry loop
   Future<bool> init({String? preferredModel}) async {
     if (isMobile) {
       debugPrint('[splicellm] Skipping — not available on mobile');
@@ -61,6 +64,8 @@ class BundledInferenceService extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+
+    _preferredModel = preferredModel;
 
     // 1. Check if service is already running (e.g. started by ProcessLauncher)
     if (await _checkHealth()) {
@@ -84,22 +89,84 @@ class BundledInferenceService extends ChangeNotifier {
     }
 
     // 3. ProcessLauncher may still be starting the bundled executable.
-    //    Wait for the service to become healthy (up to 25s).
+    //    Wait for the service to become healthy (up to 45s — supervisor does
+    //    a full hardware scan + starts 7 child services sequentially).
     debugPrint('[splicellm] Waiting for backend to start...');
+    _starting = true;
+    notifyListeners();
+
     final healthy =
-        await _waitForHealth(timeout: const Duration(seconds: 25));
+        await _waitForHealth(timeout: const Duration(seconds: 45));
     if (healthy) {
       debugPrint('[splicellm] Backend is now healthy');
       _available = true;
+      _starting = false;
       await _loadModels();
       await _autoSelectModel(preferredModel);
       notifyListeners();
       return true;
     }
 
-    debugPrint('[splicellm] Backend did not start — inference unavailable');
+    // 4. Still not ready — start background retry loop so the service
+    //    can be detected later (e.g. when user finishes onboarding).
+    debugPrint('[splicellm] Backend not ready yet — continuing background retry');
+    _starting = true;
     _available = false;
     notifyListeners();
+    _startBackgroundRetry();
+    return false;
+  }
+
+  Timer? _retryTimer;
+
+  /// Keeps checking for the backend in the background every 5 seconds.
+  void _startBackgroundRetry() {
+    _retryTimer?.cancel();
+    int attempts = 0;
+    const maxAttempts = 60; // 5 minutes max
+
+    _retryTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      attempts++;
+      if (_available || attempts > maxAttempts) {
+        timer.cancel();
+        if (!_available) {
+          debugPrint('[splicellm] Background retry gave up after $attempts attempts');
+          _starting = false;
+          notifyListeners();
+        }
+        return;
+      }
+
+      if (await _checkHealth()) {
+        timer.cancel();
+        debugPrint('[splicellm] Backend came online (background attempt $attempts)');
+        _available = true;
+        _starting = false;
+        await _loadModels();
+        await _autoSelectModel(_preferredModel);
+        notifyListeners();
+      }
+    });
+  }
+
+  /// Re-check if the backend is available now.
+  /// Call this before showing "no backend" errors — the backend may have
+  /// started after the initial init() timed out.
+  Future<bool> recheckAvailability() async {
+    if (_available) return true;
+    if (isMobile) return false;
+
+    debugPrint('[splicellm] Rechecking availability...');
+    if (await _checkHealth()) {
+      debugPrint('[splicellm] Backend is now available (recheck)');
+      _available = true;
+      _starting = false;
+      _retryTimer?.cancel();
+      await _loadModels();
+      await _autoSelectModel(_preferredModel);
+      notifyListeners();
+      return true;
+    }
     return false;
   }
 
@@ -469,6 +536,7 @@ class BundledInferenceService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _retryTimer?.cancel();
     stopServer();
     _http.close();
     super.dispose();

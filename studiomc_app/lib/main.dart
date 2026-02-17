@@ -60,17 +60,6 @@ void main() async {
   final supervisorApi = ApiClient(baseUrl: ServiceUrls.supervisor);
   final modelManagerApi = ApiClient(baseUrl: ServiceUrls.modelManager);
 
-  // ── Start full backend FIRST (desktop only) ──
-  // ProcessLauncher must start before inference services try to connect,
-  // so that BundledInferenceService can detect the running backend.
-  if (isDesktop) {
-    // Fire-and-forget — ProcessLauncher waits up to 30s internally.
-    // BundledInferenceService.init() will independently wait for port 8100.
-    ProcessLauncher.launchBackend().then((_) {
-      supervisorApi.checkAvailable();
-    });
-  }
-
   // ── Initialize inference services (platform-aware) ──
   final bundledInference = BundledInferenceService();
   final localInference = LocalInferenceService();
@@ -85,12 +74,26 @@ void main() async {
       settingsService.activeModelId = mobileInference.activeModel;
     }
   } else {
-    // Desktop: init Ollama (fast check) and start bundled service in background.
-    // BundledInferenceService.init() runs in background — it waits for the
-    // backend to become healthy and then auto-selects the preferred model.
-    // This avoids blocking the UI on slow backend startup.
-    bundledInference.init(preferredModel: settingsService.activeModelId);
+    // Desktop: start backend process, then init inference services.
+    // ProcessLauncher starts the supervisor which spawns child services
+    // (inference on 8100, model_manager on 8101, etc.).
+    // We await it so BundledInferenceService.init() can find the running backend.
+    //
+    // ProcessLauncher.launchBackend() waits up to 30s for the supervisor
+    // health check. The inference service may take a few more seconds after
+    // the supervisor is healthy, so BundledInferenceService.init() has its
+    // own wait + background retry.
+    ProcessLauncher.launchBackend().then((_) {
+      debugPrint('[main] ProcessLauncher completed');
+      supervisorApi.checkAvailable();
+    });
+
+    // Start Ollama check (fast, independent of bundled backend)
     await localInference.init(preferredModel: settingsService.activeModelId);
+
+    // Start bundled inference in background — it has its own wait + retry
+    // logic and will keep checking for the backend even after returning.
+    bundledInference.init(preferredModel: settingsService.activeModelId);
 
     if (!settingsService.hasActiveModel &&
         localInference.available &&

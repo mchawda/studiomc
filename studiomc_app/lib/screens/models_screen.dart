@@ -202,6 +202,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
       try {
         final bundled = context.read<BundledInferenceService>();
         if (!bundled.available) {
+          // Try a fresh health check — backend may have started after init
+          await bundled.recheckAvailability();
+        }
+        if (!bundled.available) {
           await bundled.init();
         }
         if (bundled.available) {
