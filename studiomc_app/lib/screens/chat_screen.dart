@@ -4,6 +4,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:studiomc_app/models/app_models.dart';
@@ -216,20 +217,15 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       } else {
         // 1) Ollama (primary for small models)
-        if (localInference.available) {
-          if (settings.hasActiveModel) {
-            localInference.selectModelByPreference(settings.activeModelId!);
-          }
-          if (localInference.activeModel != null) {
-            _modelName = localInference.humanName(localInference.activeModel!);
-          }
+        if (localInference.available && localInference.activeModel != null) {
+          _modelName = localInference.humanName(localInference.activeModel!);
         }
 
-        // 2) SpliceLLM (for large models)
+        // 2) SpliceLLM / bundled inference (for GGUF models)
         if (_modelName.isEmpty &&
             bundledInference.available &&
             bundledInference.activeModel != null) {
-          _modelName = bundledInference.activeModel!;
+          _modelName = bundledInference.humanName(bundledInference.activeModel!);
         }
       }
 
@@ -278,6 +274,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
       setState(() => _isLoading = false);
       _refreshMarkdownCache();
+
+      // Proactively warn if no backend is available
+      if (!isMobile && _modelName.isEmpty) {
+        final bundled = context.read<BundledInferenceService>();
+        final local = context.read<LocalInferenceService>();
+        if (!bundled.available && !local.available) {
+          setState(() {
+            _error = bundled.starting
+                ? 'Connecting to backend — this may take a moment on first launch...'
+                : 'Backend is not responding. Try restarting the app or click Run Setup.';
+          });
+        }
+      }
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -1427,6 +1436,18 @@ class _ChatScreenState extends State<ChatScreen> {
                         ?.copyWith(color: theme.colorScheme.error),
                   ),
                 ),
+                if (_error!.contains('not responding') ||
+                    _error!.contains('failed to start'))
+                  TextButton(
+                    onPressed: () {
+                      context.read<SettingsService>().onboardingComplete = false;
+                      context.go('/onboarding');
+                    },
+                    child: Text('Run Setup',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                            fontWeight: FontWeight.w600)),
+                  ),
                 IconButton(
                   icon: const Icon(Icons.close, size: 16),
                   onPressed: () => setState(() => _error = null),

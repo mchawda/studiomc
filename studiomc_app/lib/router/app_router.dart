@@ -15,11 +15,11 @@ import '../widgets/shell/app_shell.dart';
 
 GoRouter buildAppRouter(SettingsService settings) {
   return GoRouter(
-    initialLocation: '/onboarding',
+    initialLocation: settings.onboardingComplete ? '/chat' : '/onboarding',
     redirect: (context, state) {
       final onboarding = state.matchedLocation == '/onboarding';
 
-      // If onboarding is complete, skip it and go straight to chat
+      // If onboarding is complete and user lands on /onboarding, skip to chat
       if (onboarding && settings.onboardingComplete) {
         return '/chat';
       }

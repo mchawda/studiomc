@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../models/app_models.dart';
 import '../services/bundled_inference_service.dart';
+import '../services/local_inference_service.dart';
 import '../services/mobile_inference_service.dart';
 import '../services/settings_service.dart';
 import '../utils/platform_utils.dart';
@@ -96,6 +97,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   // ── Step 1: Welcome ──
 
+  List<String> _existingOllamaModels = [];
+
+  @override
+  void initState() {
+    super.initState();
+    if (isDesktop) _detectExistingModels();
+  }
+
+  Future<void> _detectExistingModels() async {
+    try {
+      final localInference = context.read<LocalInferenceService>();
+      if (localInference.available && localInference.models.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _existingOllamaModels =
+                localInference.models.map((m) => m.name).toList();
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _useExistingModel(String modelName) {
+    final settings = context.read<SettingsService>();
+    settings.activeModelId = modelName;
+    settings.onboardingComplete = true;
+
+    final localInference = context.read<LocalInferenceService>();
+    localInference.selectModel(modelName);
+
+    context.go('/chat');
+  }
+
   Widget _buildWelcome(ThemeData theme) {
     return Column(
       key: const ValueKey('welcome'),
@@ -115,14 +149,58 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 ?.copyWith(color: theme.colorScheme.secondary),
             textAlign: TextAlign.center),
         const SizedBox(height: 32),
+
+        // Show existing Ollama models if detected
+        if (_existingOllamaModels.isNotEmpty) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.green.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.check_circle_outline,
+                        size: 18, color: Colors.green.shade700),
+                    const SizedBox(width: 8),
+                    Text('Models found on your system',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: Colors.green.shade700)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ..._existingOllamaModels.take(5).map((name) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () => _useExistingModel(name),
+                          child: Text('Use $name'),
+                        ),
+                      ),
+                    )),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text('— or —', textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+        ],
+
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
             onPressed: _startOnboarding,
-            child: const Text('Get Started'),
+            child: const Text('Download a new model'),
           ),
         ),
-        if (isDesktop) ...[
+        if (isDesktop && _existingOllamaModels.isEmpty) ...[
           const SizedBox(height: 12),
           TextButton(
             onPressed: () {

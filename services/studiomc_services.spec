@@ -59,6 +59,8 @@ hidden_imports = [
     "lre.tools",
     "orchestrator.routes",
     "orchestrator.reasoning",
+    "training.app",
+    "training.routes",
     "supervisor.routes",
     "supervisor.manager",
     # Common utilities

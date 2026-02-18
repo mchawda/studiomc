@@ -55,30 +55,24 @@ class LocalInferenceService extends ChangeNotifier {
       _models = list.map((m) => OllamaModel.fromJson(m)).toList();
       _available = true;
 
-      // Map GGUF filenames (from onboarding) to Ollama model tags
+      // Try to match the preferred model to an installed Ollama model.
+      // Never auto-pull models — only use what's already installed.
       final ollamaTag = _ggufToOllamaTag(preferredModel);
-
-      // Try to find the preferred model in Ollama's list
       if (ollamaTag != null) {
-        final match = _models.cast<OllamaModel?>().firstWhere(
-            (m) => m!.name == ollamaTag ||
-                m.name.startsWith(ollamaTag.split(':').first),
-            orElse: () => null);
+        final match = _findModelMatch(ollamaTag);
         if (match != null) {
           _activeModel = match.name;
-        } else {
-          // Model not in Ollama yet — pull it in the background
-          _pullModel(ollamaTag);
+          debugPrint('[ollama] Matched preferred model to: ${match.name}');
         }
       }
 
-      // Only fall back if NO preference was expressed at all.
-      // Prefer a model under 8GB to avoid OOM kills.
+      // Fall back to the first available model under 8GB, or any model.
       if (_activeModel == null && _models.isNotEmpty) {
         final small = _models.cast<OllamaModel?>().firstWhere(
             (m) => m!.sizeBytes < 8 * 1024 * 1024 * 1024,
             orElse: () => null);
         _activeModel = small?.name ?? _models.first.name;
+        debugPrint('[ollama] Using fallback model: $_activeModel');
       }
       notifyListeners();
       return true;
