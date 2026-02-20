@@ -128,7 +128,7 @@ jobs:
           if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
             find "$APP_PATH/Contents/Resources/studiomc_services" -type f | while read -r f; do
               if file "$f" | grep -q "Mach-O"; then
-                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" 2>/dev/null || true
+                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
               fi
             done
           fi
@@ -140,6 +140,22 @@ jobs:
                 codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
               fi
             done
+          fi
+
+          # Verify every embedded Mach-O binary in the bundled services.
+          VERIFY_FAILED=0
+          if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
+            while IFS= read -r f; do
+              if file "$f" | grep -q "Mach-O"; then
+                if ! codesign --verify --strict --verbose=2 "$f"; then
+                  echo "::error::Unsigned or invalid binary: $f"
+                  VERIFY_FAILED=1
+                fi
+              fi
+            done < <(find "$APP_PATH/Contents/Resources/studiomc_services" -type f)
+          fi
+          if [ "$VERIFY_FAILED" -ne 0 ]; then
+            exit 1
           fi
 
           # Re-sign the app bundle to cover the newly added services
@@ -292,7 +308,7 @@ jobs:
           if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
             find "$APP_PATH/Contents/Resources/studiomc_services" -type f | while read -r f; do
               if file "$f" | grep -q "Mach-O"; then
-                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f" 2>/dev/null || true
+                codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
               fi
             done
           fi
@@ -303,6 +319,22 @@ jobs:
                 codesign --force --sign "$IDENTITY" --options runtime --timestamp "$f"
               fi
             done
+          fi
+
+          # Verify every embedded Mach-O binary in the bundled services.
+          VERIFY_FAILED=0
+          if [ -d "$APP_PATH/Contents/Resources/studiomc_services" ]; then
+            while IFS= read -r f; do
+              if file "$f" | grep -q "Mach-O"; then
+                if ! codesign --verify --strict --verbose=2 "$f"; then
+                  echo "::error::Unsigned or invalid binary: $f"
+                  VERIFY_FAILED=1
+                fi
+              fi
+            done < <(find "$APP_PATH/Contents/Resources/studiomc_services" -type f)
+          fi
+          if [ "$VERIFY_FAILED" -ne 0 ]; then
+            exit 1
           fi
 
           codesign --force --sign "$IDENTITY" --options runtime \

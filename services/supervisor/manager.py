@@ -65,6 +65,7 @@ HEALTH_CHECK_INTERVAL = 5  # seconds
 MAX_FAIL_BEFORE_RESTART = 3
 MAX_RESTARTS = 5
 GRACEFUL_SHUTDOWN_TIMEOUT = 5  # seconds before SIGKILL
+STARTUP_GRACE_SECONDS = 60  # allow cold-start services to settle before restart policy
 
 
 # ── Per-service state ────────────────────────────────────────────────────
@@ -270,6 +271,24 @@ class ProcessManager:
         """Health-check a single service."""
         # First check if subprocess is still alive
         if svc.process is not None and svc.process.returncode is not None:
+            # If something is already listening on this service port (for
+            # example a leftover process from a previous launch), treat it as
+            # healthy instead of entering a restart storm.
+            if await self._is_service_healthy(svc.port):
+                logger.warning(
+                    "%s process exited with code %s, but %s/health is up; "
+                    "assuming external process is serving this port",
+                    svc.name,
+                    svc.process.returncode,
+                    svc.port,
+                )
+                svc.process = None
+                svc.pid = None
+                svc.status = "running"
+                svc.error = None
+                svc.consecutive_failures = 0
+                return
+
             logger.warning("%s process exited with code %s", svc.name, svc.process.returncode)
             svc.status = "error"
             svc.error = f"Process exited with code {svc.process.returncode}"
@@ -288,6 +307,12 @@ class ProcessManager:
                     return
         except Exception:
             pass
+
+        # Slow first launch can take time (hardware scan, model backend probe,
+        # library load). Avoid premature restarts inside the initial grace
+        # window to prevent cascading failures.
+        if svc.start_time and (time.time() - svc.start_time) < STARTUP_GRACE_SECONDS:
+            return
 
         # Health check failed
         svc.consecutive_failures += 1
@@ -317,6 +342,15 @@ class ProcessManager:
         await self._terminate(svc)
         await asyncio.sleep(0.5)
         await self.start_service(svc.name)
+
+    async def _is_service_healthy(self, port: int) -> bool:
+        """Quick health probe for a managed service port."""
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"http://127.0.0.1:{port}/health")
+                return resp.status_code == 200
+        except Exception:
+            return False
 
     # ── Internal helpers ─────────────────────────────────────────────
 
