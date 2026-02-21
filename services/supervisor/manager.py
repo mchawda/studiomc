@@ -21,6 +21,8 @@ import asyncio
 import logging
 import os
 import signal
+import socket
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -66,6 +68,7 @@ MAX_FAIL_BEFORE_RESTART = 3
 MAX_RESTARTS = 5
 GRACEFUL_SHUTDOWN_TIMEOUT = 5  # seconds before SIGKILL
 STARTUP_GRACE_SECONDS = 60  # allow cold-start services to settle before restart policy
+FAILED_RECOVERY_COOLDOWN = 30  # seconds before auto-recovering FAILED services
 
 
 # ── Per-service state ────────────────────────────────────────────────────
@@ -86,6 +89,7 @@ class ManagedProcess:
     restart_count: int = 0
     consecutive_failures: int = 0
     _backoff: float = 1.0
+    _failed_at: float | None = None
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -176,13 +180,16 @@ class ProcessManager:
             return svc.to_status()
 
         if svc.status == "failed":
-            # Reset restart counter on explicit manual start
             svc.restart_count = 0
             svc.consecutive_failures = 0
             svc._backoff = 1.0
+            svc._failed_at = None
 
         svc.status = "starting"
         svc.error = None
+
+        # Kill any leftover process holding our port to prevent Errno 48.
+        await self._free_port(svc.port)
 
         try:
             log_path = LOGS_DIR / f"{name}.log"
@@ -199,7 +206,6 @@ class ProcessManager:
                 stdout=log_file,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
-                # Use a new process group so we can signal the tree
                 preexec_fn=os.setsid if sys.platform != "win32" else None,
             )
             svc.pid = svc.process.pid
@@ -267,6 +273,15 @@ class ProcessManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Auto-recover FAILED services after a cooldown period.
+        now = time.time()
+        for svc in self._services.values():
+            if svc.status != "failed":
+                continue
+            if svc._failed_at and (now - svc._failed_at) > FAILED_RECOVERY_COOLDOWN:
+                logger.info("Auto-recovering %s after %ds cooldown", svc.name, FAILED_RECOVERY_COOLDOWN)
+                await self.start_service(svc.name)
+
     async def _check_one(self, svc: ManagedProcess) -> None:
         """Health-check a single service."""
         # First check if subprocess is still alive
@@ -328,8 +343,9 @@ class ProcessManager:
         """Restart a service if it hasn't exceeded the restart limit."""
         if svc.restart_count >= MAX_RESTARTS:
             svc.status = "failed"
+            svc._failed_at = time.time()
             svc.error = f"Exceeded max restarts ({MAX_RESTARTS})"
-            logger.error("%s marked as FAILED — too many restarts", svc.name)
+            logger.error("%s marked as FAILED — too many restarts (will auto-recover in %ds)", svc.name, FAILED_RECOVERY_COOLDOWN)
             return
 
         svc.restart_count += 1
@@ -343,6 +359,17 @@ class ProcessManager:
         await asyncio.sleep(0.5)
         await self.start_service(svc.name)
 
+    async def restart_all_failed(self) -> list[ServiceStatus]:
+        """Reset and restart every service currently in FAILED state."""
+        results: list[ServiceStatus] = []
+        for svc in self._services.values():
+            if svc.status == "failed":
+                logger.info("Resetting FAILED service %s for restart", svc.name)
+                st = await self.start_service(svc.name)
+                results.append(st)
+        self._ensure_health_loop()
+        return results
+
     async def _is_service_healthy(self, port: int) -> bool:
         """Quick health probe for a managed service port."""
         try:
@@ -351,6 +378,49 @@ class ProcessManager:
                 return resp.status_code == 200
         except Exception:
             return False
+
+    @staticmethod
+    def _is_port_in_use(port: int) -> bool:
+        """Check whether *any* process is listening on the given port."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    async def _free_port(self, port: int) -> None:
+        """Kill whatever process is holding ``port`` and wait for it to release."""
+        if not self._is_port_in_use(port):
+            return
+
+        if sys.platform == "win32":
+            return
+
+        logger.warning("Port %d is already in use — attempting to free it", port)
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["lsof", "-ti", f":{port}"],
+                    capture_output=True, text=True, timeout=5,
+                ),
+            )
+            pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
+            my_pid = os.getpid()
+            for pid in pids:
+                if pid == my_pid:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info("Killed stale process %d on port %d", pid, port)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except Exception:
+            logger.warning("Could not identify process on port %d", port)
+
+        for _ in range(20):
+            await asyncio.sleep(0.25)
+            if not self._is_port_in_use(port):
+                return
+        logger.warning("Port %d still in use after cleanup attempt", port)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

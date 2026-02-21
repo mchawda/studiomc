@@ -48,6 +48,8 @@ class ProcessLauncher {
       _launched = true;
       _lastLaunchError = null;
       _log('Supervisor already running at ${ServiceUrls.supervisor}');
+      // Ensure child services aren't stuck in FAILED state.
+      await _restartFailedServices();
       return true;
     }
 
@@ -191,6 +193,7 @@ class ProcessLauncher {
         _lastLaunchError = 'Backend started but supervisor health check timed out.';
       } else {
         _lastLaunchError = null;
+        await _restartFailedServices();
       }
       return healthy;
     } catch (e) {
@@ -224,6 +227,33 @@ class ProcessLauncher {
     client.dispose();
     _log('Timeout waiting for supervisor health check');
     return false;
+  }
+
+  /// Ask the supervisor to restart any child services stuck in FAILED state.
+  static Future<void> _restartFailedServices() async {
+    try {
+      final client = ApiClient(
+        baseUrl: ServiceUrls.supervisor,
+        timeout: const Duration(seconds: 10),
+      );
+      final statusResp = await client.get('/status');
+
+      final services = statusResp['services'] as List<dynamic>? ?? [];
+      final hasFailed = services.any(
+        (s) => (s as Map<String, dynamic>)['status'] == 'failed',
+      );
+      if (!hasFailed) {
+        client.dispose();
+        return;
+      }
+
+      _log('Detected FAILED services — requesting restart');
+      await client.postList('/restart-failed');
+      client.dispose();
+      _log('Restart-failed request sent');
+    } catch (e) {
+      _log('Could not restart failed services: $e');
+    }
   }
 
   // ── Path resolution ─────────────────────────────────────────────────────

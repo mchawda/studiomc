@@ -102,6 +102,12 @@ async def restart_service(service_name: str) -> ServiceStatus:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/restart-failed", response_model=list[ServiceStatus])
+async def restart_failed_services() -> list[ServiceStatus]:
+    """Reset and restart every service currently in FAILED state."""
+    return await _mgr().restart_all_failed()
+
+
 # ── Hardware ─────────────────────────────────────────────────────────────
 
 
