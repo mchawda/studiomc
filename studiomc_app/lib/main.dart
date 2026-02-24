@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'dart:io' as io;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:go_router/go_router.dart';
 import 'theme/app_theme.dart';
 import 'router/app_router.dart';
 import 'services/api_client.dart';
@@ -113,6 +115,36 @@ void main() async {
   final documentService = DocumentService();
   final hardwareService = HardwareService(supervisorApi);
   final modelManagerService = ModelManagerService(modelManagerApi);
+
+  // Check if any model is actually usable (downloaded GGUF or Ollama model
+  // with at least one real model pulled). SharedPreferences may claim
+  // onboarding is complete from a prior install, but if models were deleted
+  // or the app was installed on a new machine, we need to re-run onboarding.
+  bool hasUsableModel = false;
+  if (isMobile) {
+    hasUsableModel = mobileInference.available && mobileInference.activeModel != null;
+  } else {
+    // Ollama counts only if it has real pulled models (not just the binary)
+    if (localInference.available && localInference.models.isNotEmpty) {
+      hasUsableModel = true;
+    }
+    // Also check for downloaded GGUF files on disk
+    if (!hasUsableModel) {
+      final modelsDir = io.Directory(studiomcModelsDir);
+      if (modelsDir.existsSync()) {
+        try {
+          hasUsableModel = modelsDir
+              .listSync(recursive: true)
+              .any((f) => f.path.endsWith('.gguf') || f.path.endsWith('.bin'));
+        } catch (_) {}
+      }
+    }
+  }
+
+  if (settingsService.onboardingComplete && !hasUsableModel) {
+    settingsService.onboardingComplete = false;
+    settingsService.activeModelId = null;
+  }
 
   final router = buildAppRouter(settingsService);
 

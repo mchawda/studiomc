@@ -179,6 +179,10 @@ class _ModelsScreenState extends State<ModelsScreen> {
   /// Models discovered via the bundled inference backend (Ollama + SpliceLLM).
   List<Map<String, dynamic>> _backendModels = [];
 
+  /// GGUF files on disk (from Discover downloads) — shown even when backend
+  /// isn't running, so users see their downloaded models.
+  List<Map<String, dynamic>> _diskGgufModels = [];
+
   Future<void> _load() async {
     setState(() {
       _isLoading = true;
@@ -195,6 +199,9 @@ class _ModelsScreenState extends State<ModelsScreen> {
       // Check backend availability in the background without blocking.
       final local = context.read<LocalInferenceService>();
       final bundled = context.read<BundledInferenceService>();
+
+      // Always scan disk for GGUF files (from Discover downloads)
+      _loadDiskGgufModels();
 
       // Quick non-blocking check: if already available, load models
       if (local.available || bundled.available) {
@@ -234,6 +241,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
 
     if (!mounted) return;
 
+    _loadDiskGgufModels();
     if (bundled.available) await _loadBackendModels();
     if (!mounted) return;
     await _loadAdapters();
@@ -262,6 +270,41 @@ class _ModelsScreenState extends State<ModelsScreen> {
         }
       }
     } catch (_) {}
+  }
+
+  /// Scan models directory for GGUF files (from Discover downloads).
+  /// Shown in Installed even when backend isn't running.
+  void _loadDiskGgufModels() {
+    final modelsDir = Directory(studiomcModelsDir);
+    if (!modelsDir.existsSync()) {
+      _diskGgufModels = [];
+      return;
+    }
+    final seen = <String>{};
+    final list = <Map<String, dynamic>>[];
+    try {
+      for (final e in modelsDir.listSync(recursive: true)) {
+        if (e is File &&
+            (e.path.endsWith('.gguf') || e.path.endsWith('.bin')) &&
+            e.lengthSync() > 100 * 1024 * 1024) {
+          final name = e.uri.pathSegments.last;
+          final modelId = name
+              .replaceAll('.gguf', '')
+              .replaceAll('.bin', '')
+              .toLowerCase()
+              .replaceAll(' ', '-');
+          if (seen.add(modelId)) {
+            list.add({
+              'id': modelId,
+              'filename': name,
+              'size_bytes': e.lengthSync(),
+              'backend': 'disk',
+            });
+          }
+        }
+      }
+    } catch (_) {}
+    _diskGgufModels = list;
   }
 
   Future<void> _loadAdapters() async {
@@ -412,7 +455,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
     }
 
     debugPrint('[download] Refreshing model lists');
-    // Refresh model lists
+    _loadDiskGgufModels();
     await _loadBackendModels();
 
     if (mounted) {
@@ -990,11 +1033,19 @@ class _ModelsScreenState extends State<ModelsScreen> {
                       return !installedTags.contains(id) &&
                              !installedTags.contains(bmid);
                     }).length;
+                    final diskOnly = _diskGgufModels.where((d) {
+                      final id = d['id'] as String? ?? '';
+                      if (installedTags.contains(id)) return false;
+                      return !_backendModels.any((m) =>
+                          (m['id'] as String? ?? '').toLowerCase() == id);
+                    }).length;
                     return _buildSectionHeader(theme, 'Installed',
-                        count: installed.length + nonOllamaBackend);
+                        count: installed.length + nonOllamaBackend + diskOnly);
                   }),
                   const SizedBox(height: 4),
-                  if (installed.isEmpty && _backendModels.isEmpty)
+                  if (installed.isEmpty &&
+                      _backendModels.isEmpty &&
+                      _diskGgufModels.isEmpty)
                     _buildEmpty(theme, Icons.download_outlined,
                         'No models installed',
                         subtitle: 'Download a model below')
@@ -1015,9 +1066,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
                           final id = m['id'] as String? ?? '';
                           final backendModelId = m['backend_model_id'] as String? ?? '';
                           final backend = m['backend'] as String? ?? '';
-                          // Skip Ollama models — already shown above from local service
                           if (backend == 'ollama') return false;
-                          // Skip if already shown in Ollama list
                           if (installedTags.contains(id)) return false;
                           if (installedTags.contains(backendModelId)) return false;
                           return true;
@@ -1031,6 +1080,26 @@ class _ModelsScreenState extends State<ModelsScreen> {
                                 await bundled.selectModel(id,
                                     backend: m['backend'] as String?);
                               },
+                            )),
+                    // Disk-only GGUF (downloaded from Discover, backend not up yet)
+                    ..._diskGgufModels
+                        .where((d) {
+                          final id = d['id'] as String? ?? '';
+                          if (installedTags.contains(id)) return false;
+                          return !_backendModels.any((m) =>
+                              (m['id'] as String? ?? '').toLowerCase() == id);
+                        })
+                        .map((d) => _DiskModelCard(
+                              filename: d['filename'] as String? ?? '',
+                              sizeBytes: d['size_bytes'] as int? ?? 0,
+                              formatBytes: _formatBytes,
+                              backendAvailable: bundled.available,
+                              onActivate: bundled.available
+                                  ? () async {
+                                      final id = d['id'] as String? ?? '';
+                                      await bundled.selectModel(id);
+                                    }
+                                  : null,
                             )),
                   ],
 
@@ -2159,6 +2228,97 @@ class _BackendModelCard extends StatelessWidget {
                 child: Text('Active',
                     style: GoogleFonts.inter(
                       fontSize: 8,
+                      fontWeight: FontWeight.w500,
+                      color: theme.colorScheme.primary,
+                    )),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Disk-only GGUF card (downloaded, backend not up yet) ──
+
+class _DiskModelCard extends StatelessWidget {
+  final String filename;
+  final int sizeBytes;
+  final String Function(int) formatBytes;
+  final bool backendAvailable;
+  final VoidCallback? onActivate;
+
+  const _DiskModelCard({
+    required this.filename,
+    required this.sizeBytes,
+    required this.formatBytes,
+    required this.backendAvailable,
+    this.onActivate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = filename
+        .replaceAll('.gguf', '')
+        .replaceAll('.bin', '')
+        .replaceAll('-', ' ')
+        .replaceAll('_', ' ');
+    final humanName = name.split(' ').map((w) {
+      if (w.isEmpty) return w;
+      return '${w[0].toUpperCase()}${w.substring(1)}';
+    }).join(' ');
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: onActivate,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: theme.dividerColor, width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.folder_outlined,
+                size: 14, color: theme.colorScheme.secondary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(humanName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                        color: theme.colorScheme.onSurface,
+                      )),
+                  Text(
+                    backendAvailable
+                        ? '${formatBytes(sizeBytes)} · Ready'
+                        : '${formatBytes(sizeBytes)} · Waiting for backend',
+                    style: GoogleFonts.inter(
+                      fontSize: 9,
+                      color: theme.colorScheme.secondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (backendAvailable && onActivate != null)
+              TextButton(
+                onPressed: onActivate,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text('Use',
+                    style: GoogleFonts.inter(
+                      fontSize: 10,
                       fontWeight: FontWeight.w500,
                       color: theme.colorScheme.primary,
                     )),

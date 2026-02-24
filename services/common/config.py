@@ -66,4 +66,6 @@ ADAPTERS_DIR = ROOT / "adapters"
 def ensure_dirs() -> None:
     """Create all required directories on first launch."""
     for d in (DB_DIR, MODELS_DIR, DOCS_DIR, INDEXES_DIR, LOGS_DIR, CACHE_DIR, DOWNLOADS_DIR, ADAPTERS_DIR):
+        if d.is_symlink() or d.exists():
+            continue
         d.mkdir(parents=True, exist_ok=True)

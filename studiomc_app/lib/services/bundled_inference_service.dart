@@ -66,7 +66,8 @@ class BundledInferenceService extends ChangeNotifier {
     _preferredModel = preferredModel;
 
     // 1. Check if service is already running
-    if (await _checkHealth()) {
+    final alreadyHealthy = await _checkHealth();
+    if (alreadyHealthy) {
       debugPrint('[splicellm] Service already running at $_baseUrl');
       _available = true;
       await _loadModels();
