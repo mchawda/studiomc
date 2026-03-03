@@ -52,9 +52,15 @@ if command -v create-dmg &>/dev/null; then
     # Remove previous DMG if it exists (create-dmg won't overwrite)
     rm -f "$DMG_PATH"
 
+    VOLICON_ARG=()
+    ICON_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
+    if [ -f "$ICON_PATH" ]; then
+        VOLICON_ARG=(--volicon "$ICON_PATH")
+    fi
+
     create-dmg \
         --volname "$DMG_NAME" \
-        --volicon "$APP_PATH/Contents/Resources/AppIcon.icns" \
+        "${VOLICON_ARG[@]}" \
         --window-pos 200 120 \
         --window-size 660 400 \
         --icon-size 100 \

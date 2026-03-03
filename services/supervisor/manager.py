@@ -21,6 +21,8 @@ import asyncio
 import logging
 import os
 import signal
+import socket
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -125,6 +127,49 @@ class ProcessManager:
                 port=port,
                 app_path=str(SERVICES_DIR / rel_path),
             )
+
+    # ── Stale process cleanup ────────────────────────────────────────
+
+    def kill_stale_port_holders(self) -> None:
+        """Kill any leftover processes holding our ports from a previous run.
+
+        When the app is quit abruptly, child services (started with setsid)
+        can survive and hold ports. This prevents the next launch from binding.
+        """
+        all_ports = list(ALL_PORTS.values())
+        for port in all_ports:
+            if not self._port_in_use(port):
+                continue
+            logger.warning("Port %d already in use — killing stale holder", port)
+            self._kill_port_holder(port)
+
+    @staticmethod
+    def _port_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    @staticmethod
+    def _kill_port_holder(port: int) -> None:
+        """Find and kill the process listening on a given port."""
+        if sys.platform == "win32":
+            return
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = result.stdout.strip().split()
+            for pid_str in pids:
+                try:
+                    pid = int(pid_str)
+                    if pid == os.getpid():
+                        continue
+                    os.kill(pid, signal.SIGKILL)
+                    logger.info("Killed stale process %d on port %d", pid, port)
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+        except Exception as exc:
+            logger.warning("Could not clean port %d: %s", port, exc)
 
     # ── Public API ────────────────────────────────────────────────────
 

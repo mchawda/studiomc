@@ -77,17 +77,14 @@ jobs:
         run: |
           PBXPROJ="studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
 
-          # Patch the Runner target Release config for Developer ID signing
-          # Replace CODE_SIGN_IDENTITY = "-" with Developer ID Application
-          sed -i '' 's/CODE_SIGN_IDENTITY = "-";/CODE_SIGN_IDENTITY = "Developer ID Application";/' "$PBXPROJ"
-
-          # Replace CODE_SIGN_STYLE = Automatic with Manual (only in Release config section)
-          # The Release config for Runner target (33CC10FD) needs Manual for Developer ID
+          # Only patch the Runner target Release config (33CC10FD), not the project-level configs.
+          # Scope all sed replacements to the section between Release.entitlements and "name = Release".
           sed -i '' '/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements/,/name = Release/ {
+            s/CODE_SIGN_IDENTITY = "-";/CODE_SIGN_IDENTITY = "Developer ID Application";/
             s/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/
           }' "$PBXPROJ"
 
-          # Add DEVELOPMENT_TEAM after COMBINE_HIDPI_IMAGES in the Release config
+          # Add DEVELOPMENT_TEAM inside the same Runner Release config section
           sed -i '' "/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements/,/name = Release/ {
             /COMBINE_HIDPI_IMAGES = YES/a\\
             DEVELOPMENT_TEAM = $APPLE_TEAM_ID;
@@ -250,9 +247,8 @@ jobs:
         run: |
           PBXPROJ="studiomc_app/macos/Runner.xcodeproj/project.pbxproj"
 
-          sed -i '' 's/CODE_SIGN_IDENTITY = "-";/CODE_SIGN_IDENTITY = "Developer ID Application";/' "$PBXPROJ"
-
           sed -i '' '/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements/,/name = Release/ {
+            s/CODE_SIGN_IDENTITY = "-";/CODE_SIGN_IDENTITY = "Developer ID Application";/
             s/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/
           }' "$PBXPROJ"
 

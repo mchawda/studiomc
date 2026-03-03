@@ -49,8 +49,10 @@ manager = ProcessManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: scan hardware + launch all services. Shutdown: stop all."""
-    logger.info("Supervisor starting — scanning hardware…")
-    # Full hardware scan (with disk benchmark) on first boot
+    logger.info("Supervisor starting — cleaning up stale processes…")
+    manager.kill_stale_port_holders()
+
+    logger.info("Scanning hardware…")
     try:
         hw = await manager.scan_hardware(quick=False)
         logger.info("Hardware: %s (%s, VRAM %s)", hw.cpu_name, hw.gpu_name, hw.vram_bytes)

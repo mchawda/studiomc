@@ -122,14 +122,19 @@ if [ "$DO_SIGN" = true ]; then
     codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
     echo "✓ Code signed"
 
-    # Notarize
+    # Notarize — notarytool requires a zip/dmg/pkg, not a bare .app
+    echo "→ Creating zip for notarization…"
+    NOTARIZE_ZIP="$APP_DIR/Studiomc-notarize.zip"
+    ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
+
     echo "→ Submitting for notarization…"
-    xcrun notarytool submit "$APP_PATH" \
+    xcrun notarytool submit "$NOTARIZE_ZIP" \
         --apple-id "${APPLE_ID}" \
         --team-id "${APPLE_TEAM_ID}" \
         --password "${APPLE_APP_PASSWORD}" \
         --wait
 
+    rm -f "$NOTARIZE_ZIP"
     xcrun stapler staple "$APP_PATH"
     echo "✓ Notarization complete"
 else

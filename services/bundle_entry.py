@@ -42,7 +42,9 @@ def _run_supervisor() -> None:
     """Start the supervisor service (default mode)."""
     import uvicorn
     from common.config import SUPERVISOR_PORT
-    from supervisor.app import app
+    from supervisor.app import app, manager
+
+    manager.kill_stale_port_holders()
 
     uvicorn.run(
         app,

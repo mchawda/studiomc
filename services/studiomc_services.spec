@@ -80,6 +80,19 @@ hidden_imports = [
     "llama_cpp",
     "llama_cpp.llama",
     "llama_cpp.llama_cpp",
+    # File I/O
+    "aiofiles",
+    # PyTorch submodules needed to avoid circular imports in frozen bundles
+    "torch.autograd",
+    "torch.autograd.function",
+    "torch.autograd.variable",
+    "torch.nn",
+    "torch.nn.functional",
+    "torch.nested",
+    "torch.nested._internal",
+    "torch.nested._internal.nested_tensor",
+    "torch.utils",
+    "torch.utils.data",
 ]
 
 # ── Data files ─────────────────────────────────────────────────────────────
@@ -94,6 +107,7 @@ datas = [
     ("lre", "lre"),
     ("orchestrator", "orchestrator"),
     ("supervisor", "supervisor"),
+    ("training", "training"),
     ("common", "common"),
 ]
 

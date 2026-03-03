@@ -46,8 +46,11 @@ help:
 # ── Temp directory (keep boot disk free) ────────────────────────────────
 # Flutter/Dart write large compile artifacts to TMPDIR.
 # Redirect to the external drive so the small macOS boot disk isn't filled.
+# Only override if the external drive is actually mounted.
 EXT_TMP := /Volumes/External Drive/system/tmp
+ifneq ($(wildcard /Volumes/External Drive),)
 export TMPDIR := $(EXT_TMP)
+endif
 
 # ── Development ──────────────────────────────────────────────────────────
 
@@ -69,7 +72,9 @@ flutter: _ensure-tmp
 	cd studiomc_app && flutter run -d macos
 
 _ensure-tmp:
-	@mkdir -p "$(EXT_TMP)"
+ifdef TMPDIR
+	@mkdir -p "$(TMPDIR)"
+endif
 
 # ── Build ────────────────────────────────────────────────────────────────
 
