@@ -27,14 +27,16 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
+import os
+
 from inference.engine import GenerationMetrics
 
 logger = logging.getLogger("inference.backends")
 
 # ── Constants ─────────────────────────────────────────────────────────
 
-OLLAMA_DEFAULT_URL = "http://localhost:11434"
-LMSTUDIO_DEFAULT_URL = "http://localhost:1234"
+OLLAMA_DEFAULT_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+LMSTUDIO_DEFAULT_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234")
 PROBE_TIMEOUT = 3.0  # seconds to wait when probing a backend
 
 

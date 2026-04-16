@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 
 /// Model Arena — side-by-side comparison of two models.
@@ -62,7 +63,7 @@ class _ArenaScreenState extends State<ArenaScreen> {
   Future<void> _loadModels() async {
     try {
       final resp = await http
-          .get(Uri.parse('http://127.0.0.1:8100/v1/models'))
+          .get(Uri.parse('${ServiceUrls.inference}/v1/models'))
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode == 200) {
         final body = jsonDecode(resp.body);
@@ -116,7 +117,7 @@ class _ArenaScreenState extends State<ArenaScreen> {
     try {
       final request = http.Request(
         'POST',
-        Uri.parse('http://127.0.0.1:8100/v1/chat/completions'),
+        Uri.parse('${ServiceUrls.inference}/v1/chat/completions'),
       );
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode({

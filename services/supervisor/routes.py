@@ -102,6 +102,27 @@ async def restart_service(service_name: str) -> ServiceStatus:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+# ── Shutdown ─────────────────────────────────────────────────────────────
+
+
+@router.post("/shutdown")
+async def shutdown() -> dict[str, str]:
+    """Gracefully stop all child services, then signal the supervisor to exit."""
+    import asyncio
+    import os
+    import signal
+
+    mgr = _mgr()
+    await mgr.stop_all()
+
+    async def _deferred_exit() -> None:
+        await asyncio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    asyncio.create_task(_deferred_exit())
+    return {"status": "shutting_down"}
+
+
 # ── Hardware ─────────────────────────────────────────────────────────────
 
 

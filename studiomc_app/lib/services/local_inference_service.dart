@@ -16,7 +16,11 @@ import '../utils/platform_utils.dart';
 /// This service auto-detects Ollama, lists available models, and
 /// provides streaming chat completions — zero backend required.
 class LocalInferenceService extends ChangeNotifier {
-  static const _ollamaBase = 'http://127.0.0.1:11434';
+  static const _ollamaBase = String.fromEnvironment(
+    'OLLAMA_URL',
+    defaultValue: 'http://127.0.0.1:11434',
+  );
+  static String get ollamaBase => _ollamaBase;
   final http.Client _http = http.Client();
 
   bool _available = false;

@@ -17,7 +17,7 @@ import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from common.config import TRAINING_PORT, ensure_dirs
+from common.config import TRAINING_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
 from training.routes import router
 
@@ -54,4 +54,4 @@ async def _shutdown() -> None:
     await db.close()
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=TRAINING_PORT, reload=False, log_level="info")
+    uvicorn.run(app, host=SERVICE_HOST, port=TRAINING_PORT, reload=False, log_level="info")

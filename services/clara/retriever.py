@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 import numpy as np
 
-from common.config import INDEXES_DIR, INFERENCE_PORT
+from common.config import INDEXES_DIR, INFERENCE_PORT, service_url
 from common.database import Database
 from common.schemas import (
     ClaraAnswerResponse,
@@ -253,7 +253,7 @@ async def generate_answer(
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
-                f"http://127.0.0.1:{INFERENCE_PORT}/v1/chat/completions",
+                service_url(INFERENCE_PORT, "/v1/chat/completions"),
                 json={
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,

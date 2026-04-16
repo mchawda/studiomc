@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:studiomc_app/services/api_client.dart';
 import '../utils/platform_utils.dart';
 
 /// Manages the SpliceLLM Python inference service.
@@ -23,7 +24,7 @@ import '../utils/platform_utils.dart';
 /// SpliceLLM as fallback for models too large for RAM.
 class BundledInferenceService extends ChangeNotifier {
   static const _port = 8100;
-  static const _baseUrl = 'http://127.0.0.1:$_port';
+  static final _baseUrl = ServiceUrls.inference;
 
   final http.Client _http = http.Client();
 

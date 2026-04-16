@@ -64,7 +64,7 @@ class InferenceService {
 
     try {
       _activeSocket = await WebSocket.connect(
-        'ws://127.0.0.1:8100/v1/chat/stream',
+        '${ServiceUrls.inference.replaceFirst('http', 'ws')}/v1/chat/stream',
       ).timeout(const Duration(seconds: 10));
 
       // Send initial handshake with chatId.

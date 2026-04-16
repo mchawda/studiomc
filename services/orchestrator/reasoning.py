@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from common.config import CLARA_PORT, INFERENCE_PORT, LRE_PORT
+from common.config import CLARA_PORT, INFERENCE_PORT, LRE_PORT, service_url
 from common.database import Database
 from common.schemas import (
     Citation,
@@ -48,10 +48,10 @@ logger = logging.getLogger("orchestrator.reasoning")
 
 # ── Service URLs ────────────────────────────────────────────────────
 
-INFERENCE_URL = f"http://127.0.0.1:{INFERENCE_PORT}/v1/chat/completions"
-CLARA_QUERY_URL = f"http://127.0.0.1:{CLARA_PORT}/clara/query"
-CLARA_ANSWER_URL = f"http://127.0.0.1:{CLARA_PORT}/clara/answer"
-LRE_EXECUTE_URL = f"http://127.0.0.1:{LRE_PORT}/lre/execute"
+INFERENCE_URL = service_url(INFERENCE_PORT, "/v1/chat/completions")
+CLARA_QUERY_URL = service_url(CLARA_PORT, "/clara/query")
+CLARA_ANSWER_URL = service_url(CLARA_PORT, "/clara/answer")
+LRE_EXECUTE_URL = service_url(LRE_PORT, "/lre/execute")
 
 # ── Budget defaults ─────────────────────────────────────────────────
 

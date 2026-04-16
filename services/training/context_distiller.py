@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from common.config import ADAPTERS_DIR, INFERENCE_PORT, MODELS_DIR
+from common.config import ADAPTERS_DIR, INFERENCE_PORT, MODELS_DIR, service_url
 from common.database import Database
 
 from clara.compressor import encode_texts, get_dims
@@ -291,7 +291,7 @@ async def _generate_qa_pairs_api(
 
             try:
                 resp = await client.post(
-                    f"http://127.0.0.1:{INFERENCE_PORT}/v1/chat/completions",
+                    service_url(INFERENCE_PORT, "/v1/chat/completions"),
                     json={
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.7,

@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from common.config import ALL_PORTS, LOGS_DIR, ensure_dirs
+from common.config import ALL_PORTS, LOGS_DIR, SERVICE_HOST, ensure_dirs, service_url
 from common.hardware import scan_hardware
 from common.schemas import HardwareInfo, ServiceStatus, SupervisorStatus
 
@@ -147,7 +147,7 @@ class ProcessManager:
     @staticmethod
     def _port_in_use(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(("127.0.0.1", port)) == 0
+            return s.connect_ex((SERVICE_HOST, port)) == 0
 
     @staticmethod
     def _kill_port_holder(port: int) -> None:
@@ -323,7 +323,7 @@ class ProcessManager:
             await self._maybe_restart(svc)
             return
 
-        url = f"http://127.0.0.1:{svc.port}/health"
+        url = service_url(svc.port, "/health")
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(url)

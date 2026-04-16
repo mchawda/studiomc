@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # ── Path fixup (must come before local imports) ──────────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from common.config import LOGS_DIR, SUPERVISOR_PORT, ensure_dirs
+from common.config import LOGS_DIR, SERVICE_HOST, SUPERVISOR_PORT, ensure_dirs
 
 from supervisor.manager import ProcessManager
 from supervisor.routes import router, set_manager
@@ -99,7 +99,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=SUPERVISOR_PORT,
         reload=False,
         log_level="info",

@@ -948,7 +948,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: GoogleFonts.inter(
                           fontSize: 10, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 6),
-                  _copyableRow(theme, 'Base URL', 'http://127.0.0.1:8100/v1'),
+                  _copyableRow(theme, 'Base URL', '${ServiceUrls.inference}/v1'),
                   const SizedBox(height: 4),
                   _copyableRow(theme, 'Model', 'studiomc'),
                 ],
@@ -1130,7 +1130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _instructionStep(theme, '1',
                       'Create an API key above and copy it'),
                   _instructionStep(theme, '2',
-                      'Set Base URL to  http://127.0.0.1:8100/v1'),
+                      'Set Base URL to  ${ServiceUrls.inference}/v1'),
                   _instructionStep(theme, '3',
                       'Paste the key as your API key in Cursor / Claude Code'),
                   _instructionStep(theme, '4',

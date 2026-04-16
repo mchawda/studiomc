@@ -19,7 +19,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from common.config import DOCUMENT_PORT, ensure_dirs
+from common.config import DOCUMENT_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
 
 from documents.routes import router
@@ -62,7 +62,7 @@ async def _shutdown() -> None:
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=DOCUMENT_PORT,
         reload=False,
         log_level="info",

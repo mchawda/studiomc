@@ -669,7 +669,7 @@ class KnowledgeDistiller:
         """
         import httpx
 
-        from common.config import INFERENCE_PORT
+        from common.config import INFERENCE_PORT, service_url
 
         if progress_callback:
             progress_callback(0.10, "Generating pseudo-labels from cloud teacher")
@@ -681,7 +681,7 @@ class KnowledgeDistiller:
             for idx, text in enumerate(dataset):
                 try:
                     resp = await client.post(
-                        f"http://127.0.0.1:{INFERENCE_PORT}/v1/chat/completions",
+                        service_url(INFERENCE_PORT, "/v1/chat/completions"),
                         json={
                             "messages": [
                                 {"role": "user", "content": f"Continue the following text:\n\n{text[:500]}"}

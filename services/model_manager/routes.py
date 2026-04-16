@@ -19,7 +19,11 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import os
+
 from common.config import INFERENCE_PORT, MODELS_DIR
+
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 from common.schemas import (
     AIModel,
     AutopilotResult,
@@ -250,7 +254,7 @@ async def _fetch_backend_models() -> list[BackendModelInfo]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Probe Ollama
-            resp = await client.get(f"http://127.0.0.1:11434/api/tags")
+            resp = await client.get(f"{OLLAMA_URL}/api/tags")
             if resp.status_code == 200:
                 data = resp.json()
                 for m in data.get("models", []):
@@ -264,7 +268,7 @@ async def _fetch_backend_models() -> list[BackendModelInfo]:
 
             # Check which model is currently loaded (warm) in Ollama
             try:
-                ps_resp = await client.get(f"http://127.0.0.1:11434/api/ps")
+                ps_resp = await client.get(f"{OLLAMA_URL}/api/ps")
                 if ps_resp.status_code == 200:
                     ps_data = ps_resp.json()
                     loaded_names = {

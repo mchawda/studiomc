@@ -925,7 +925,7 @@ class _OllamaModelListState extends State<_OllamaModelList> {
 
     try {
       final request = http.Request(
-          'POST', Uri.parse('http://127.0.0.1:11434/api/pull'));
+          'POST', Uri.parse('${LocalInferenceService.ollamaBase}/api/pull'));
       request.headers['content-type'] = 'application/json';
       request.body = jsonEncode({'name': tag, 'stream': true});
 

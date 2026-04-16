@@ -22,7 +22,7 @@ import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from common.config import ensure_dirs
+from common.config import ensure_dirs, DATA_RECIPES_PORT, SERVICE_HOST
 from common.database import Database
 from data_recipes.routes import router
 
@@ -31,8 +31,6 @@ logging.basicConfig(
     format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
     datefmt="%H:%M:%S",
 )
-
-DATA_RECIPES_PORT = 8107
 
 app = FastAPI(
     title="Studiomc Data Recipes Service",
@@ -65,5 +63,5 @@ async def _shutdown() -> None:
 
 if __name__ == "__main__":
     uvicorn.run(
-        app, host="127.0.0.1", port=DATA_RECIPES_PORT, reload=False, log_level="info"
+        app, host=SERVICE_HOST, port=DATA_RECIPES_PORT, reload=False, log_level="info"
     )

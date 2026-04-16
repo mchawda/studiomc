@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from common.config import MODEL_MANAGER_PORT, ensure_dirs
+from common.config import MODEL_MANAGER_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
 
 from model_manager.routes import router
@@ -76,7 +76,7 @@ def main() -> None:
     """Run the service directly: python -m model_manager.app"""
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=MODEL_MANAGER_PORT,
         reload=False,
         log_level="info",

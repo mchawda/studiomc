@@ -25,7 +25,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from common.config import ADAPTERS_DIR
+from common.config import ADAPTERS_DIR, INFERENCE_PORT, service_url
 from common.database import Database
 from data_recipes.recipe_engine import (
     OutputFormat,
@@ -247,7 +247,7 @@ async def generate_dataset_llm(req: LLMGenerateRequest) -> RecipeResponse:
             prompt = prompt_template.format(chunk=chunk)
             try:
                 resp = await client.post(
-                    "http://127.0.0.1:8100/v1/chat/completions",
+                    service_url(INFERENCE_PORT, "/v1/chat/completions"),
                     json={
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False,

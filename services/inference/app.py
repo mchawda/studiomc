@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from common.config import INFERENCE_PORT, ensure_dirs
+from common.config import INFERENCE_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
 
 from inference.engine import InferenceEngine
@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
         extra = f" ({model_count} models)" if info.online and model_count else ""
         logger.info("  %-20s %s%s", name, status, extra)
 
-    logger.info("Listening on 127.0.0.1:%d", INFERENCE_PORT)
+    logger.info("Listening on %s:%d", SERVICE_HOST, INFERENCE_PORT)
 
     yield
 
@@ -183,7 +183,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=INFERENCE_PORT,
         reload=False,
         log_level="info",

@@ -26,7 +26,7 @@ from typing import AsyncIterator
 import uvicorn
 from fastapi import FastAPI
 
-from common.config import LRE_PORT
+from common.config import LRE_PORT, SERVICE_HOST
 from common.database import Database
 
 from lre.routes import router
@@ -70,7 +70,7 @@ async def root_health() -> dict[str, str]:
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=LRE_PORT,
         log_level="info",
     )

@@ -39,7 +39,10 @@ LOGS_DIR = ROOT / "logs"
 CACHE_DIR = ROOT / "cache"
 DOWNLOADS_DIR = CACHE_DIR / "downloads"
 
-# Service ports (all localhost-only)
+# Service host — override with STUDIOMC_SERVICE_HOST for non-localhost setups
+SERVICE_HOST = os.environ.get("STUDIOMC_SERVICE_HOST", "127.0.0.1")
+
+# Service ports
 INFERENCE_PORT = 8100
 MODEL_MANAGER_PORT = 8101
 DOCUMENT_PORT = 8102
@@ -61,6 +64,11 @@ ALL_PORTS = {
     "data_recipes": DATA_RECIPES_PORT,
     "supervisor": SUPERVISOR_PORT,
 }
+
+
+def service_url(port: int, path: str = "") -> str:
+    """Build an HTTP URL for an internal service."""
+    return f"http://{SERVICE_HOST}:{port}{path}"
 
 
 ADAPTERS_DIR = ROOT / "adapters"

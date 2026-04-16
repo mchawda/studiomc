@@ -12,6 +12,7 @@ import 'package:studiomc_app/models/mobile_model_catalog.dart';
 import 'package:studiomc_app/services/bundled_inference_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
 import 'package:studiomc_app/services/mobile_inference_service.dart';
+import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/settings_service.dart';
 import 'package:studiomc_app/services/training_service.dart';
 import 'package:studiomc_app/utils/platform_utils.dart';
@@ -250,7 +251,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
   Future<void> _loadBackendModels() async {
     try {
       final resp = await http
-          .get(Uri.parse('http://127.0.0.1:8100/v1/models'))
+          .get(Uri.parse('${ServiceUrls.inference}/v1/models'))
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -359,7 +360,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
         final modelName = curated?.name ?? tag;
 
         final resp = await http.post(
-          Uri.parse('http://127.0.0.1:8101/models/add'),
+          Uri.parse('${ServiceUrls.modelManager}/models/add'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'source': 'hf',
@@ -378,7 +379,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
             try {
               final statusResp = await http
                   .get(Uri.parse(
-                      'http://127.0.0.1:8101/models/status/${Uri.encodeComponent(modelId)}'))
+                      '${ServiceUrls.modelManager}/models/status/${Uri.encodeComponent(modelId)}'))
                   .timeout(const Duration(seconds: 5));
               if (statusResp.statusCode == 200) {
                 final data = jsonDecode(statusResp.body);

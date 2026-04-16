@@ -9,14 +9,24 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 /// Per-service base URLs for all backend microservices.
+///
+/// Override [_host] at startup via the STUDIOMC_SERVICE_HOST environment
+/// variable (e.g. for remote or container-based backends).
 class ServiceUrls {
-  static const supervisor = 'http://127.0.0.1:8110';
-  static const inference = 'http://127.0.0.1:8100';
-  static const modelManager = 'http://127.0.0.1:8101';
-  static const documents = 'http://127.0.0.1:8102';
-  static const clara = 'http://127.0.0.1:8103';
-  static const lre = 'http://127.0.0.1:8104';
-  static const orchestrator = 'http://127.0.0.1:8105';
+  static const _host = String.fromEnvironment(
+    'STUDIOMC_SERVICE_HOST',
+    defaultValue: '127.0.0.1',
+  );
+
+  static const supervisor = 'http://$_host:8110';
+  static const inference = 'http://$_host:8100';
+  static const modelManager = 'http://$_host:8101';
+  static const documents = 'http://$_host:8102';
+  static const clara = 'http://$_host:8103';
+  static const lre = 'http://$_host:8104';
+  static const orchestrator = 'http://$_host:8105';
+  static const training = 'http://$_host:8106';
+  static const dataRecipes = 'http://$_host:8107';
 }
 
 /// Reusable HTTP client for communicating with a single backend service.

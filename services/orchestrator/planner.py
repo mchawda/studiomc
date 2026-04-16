@@ -17,13 +17,13 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from common.config import INFERENCE_PORT
+from common.config import INFERENCE_PORT, service_url
 
 logger = logging.getLogger("orchestrator.planner")
 
 # ── Plan data structures ────────────────────────────────────────────
 
-INFERENCE_URL = f"http://127.0.0.1:{INFERENCE_PORT}/v1/chat/completions"
+INFERENCE_URL = service_url(INFERENCE_PORT, "/v1/chat/completions")
 
 # Tool names that the planner can emit
 TOOL_SEARCH = "search"

@@ -22,7 +22,7 @@ from pathlib import Path
 # ── Path fixup so ``from common.…`` works when run as a script ──────
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from common.config import ORCHESTRATOR_PORT  # noqa: E402
+from common.config import ORCHESTRATOR_PORT, SERVICE_HOST  # noqa: E402
 
 from fastapi import FastAPI  # noqa: E402
 
@@ -55,7 +55,7 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    logger.info("Orchestrator starting on 127.0.0.1:%d", ORCHESTRATOR_PORT)
+    logger.info("Orchestrator starting on %s:%d", SERVICE_HOST, ORCHESTRATOR_PORT)
 
 
 @app.on_event("shutdown")
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=SERVICE_HOST,
         port=ORCHESTRATOR_PORT,
         log_level="info",
     )

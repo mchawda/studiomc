@@ -3,9 +3,10 @@
 
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:studiomc_app/services/api_client.dart';
 
 class TrainingService {
-  static const _baseUrl = 'http://127.0.0.1:8106';
+  static final _baseUrl = ServiceUrls.training;
 
   /// Start a new training run.
   /// Returns the run ID and adapter ID if successful.

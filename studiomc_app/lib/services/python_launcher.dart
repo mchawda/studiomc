@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:studiomc_app/services/api_client.dart';
 
 /// Configuration for the Python backend launcher.
 class PythonLauncherConfig {
@@ -110,7 +111,7 @@ class PythonLauncher {
   int? get pid => _process?.pid;
 
   /// The URL where the supervisor is expected to be reachable.
-  String get supervisorUrl => 'http://127.0.0.1:${_config.supervisorPort}';
+  String get supervisorUrl => '${ServiceUrls.supervisor}';
 
   // ── Public API ──────────────────────────────────────────────────────────
 
