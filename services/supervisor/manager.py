@@ -61,6 +61,7 @@ MANAGED_SERVICES: dict[str, str] = {
     "lre": "lre/app.py",
     "orchestrator": "orchestrator/app.py",
     "training": "training/app.py",
+    "data_recipes": "data_recipes/app.py",
 }
 
 HEALTH_CHECK_INTERVAL = 5  # seconds

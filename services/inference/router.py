@@ -52,6 +52,7 @@ from inference.backends import (
     StudiomcClient,
     LlamaCppClient,
     FrontierClient,
+    MLXClient,
 )
 from inference.core.loader import safe_switch, SwitchResult
 from inference.core.memory_guard import MemoryGuard
@@ -82,7 +83,8 @@ class InferenceRouter:
 
     # Backend priority order (first online backend with the model wins).
     # Local backends always come before cloud.
-    BACKEND_PRIORITY = ["ollama", "lmstudio", "llamacpp", "studiomc"]
+    # MLX is preferred over llamacpp on Apple Silicon for GPU acceleration.
+    BACKEND_PRIORITY = ["ollama", "lmstudio", "mlx", "llamacpp", "studiomc"]
 
     def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
@@ -104,6 +106,7 @@ class InferenceRouter:
         # Always register the built-in backends
         self._backends["ollama"] = OllamaClient()
         self._backends["lmstudio"] = LMStudioClient()
+        self._backends["mlx"] = MLXClient()
         self._backends["llamacpp"] = LlamaCppClient()
         self._backends["studiomc"] = StudiomcClient(engine)
 
@@ -300,6 +303,20 @@ class InferenceRouter:
             # If backend is specified, use it directly
             if resolved_backend and resolved_backend in self._backends:
                 client = self._backends[resolved_backend]
+
+                # For MLX backend, load the model directly
+                if resolved_backend == "mlx" and isinstance(
+                    client, MLXClient
+                ):
+                    loaded = await client.load_model(backend_model_id)
+                    if not loaded:
+                        logger.warning(
+                            "MLX model load failed for %s — not setting as active",
+                            backend_model_id,
+                        )
+                        raise ValueError(
+                            f"Failed to load model {backend_model_id} on mlx"
+                        )
 
                 # For llamacpp backend, load the GGUF model directly
                 if resolved_backend == "llamacpp" and isinstance(

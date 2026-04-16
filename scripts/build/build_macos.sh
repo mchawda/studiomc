@@ -1,152 +1,145 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────
-# build_macos.sh — macOS-specific build pipeline
+# build_macos.sh — Build the macOS .app with embedded Python services
 #
 # Steps:
-#   1. Build Python services bundle
-#   2. Build Flutter macOS app
-#   3. Embed services bundle inside the .app/Contents/Resources/
-#   4. Sign and notarize (placeholder for CI)
+#   1. Bundle Python services (unless --skip-services)
+#   2. Build Flutter macOS app (flutter build macos --release)
+#   3. Embed the services bundle inside the .app
 #
-# The resulting .app is fully self-contained — no system Python required.
+# The resulting .app is self-contained — no system Python needed.
+# Code signing and DMG creation are handled separately by CI or release scripts.
+#
+# Called by:
+#   - release.yml (CI) with --skip-services (services built in prior step)
+#   - Makefile (make build-macos)
+#   - scripts/build_macos.sh (wrapper)
+#   - scripts/build-macos.sh (convenience wrapper)
 #
 # Usage:
-#   bash scripts/build/build_macos.sh [--skip-services] [--sign]
+#   bash scripts/build/build_macos.sh [--skip-services] [--skip-flutter] [--clean]
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SERVICES_DIR="$PROJECT_ROOT/services"
 FLUTTER_DIR="$PROJECT_ROOT/studiomc_app"
+SERVICES_DIR="$PROJECT_ROOT/services"
 
 SKIP_SERVICES=false
-DO_SIGN=false
+SKIP_FLUTTER=false
+CLEAN=false
 
 for arg in "$@"; do
     case $arg in
         --skip-services) SKIP_SERVICES=true ;;
-        --sign) DO_SIGN=true ;;
+        --skip-flutter)  SKIP_FLUTTER=true ;;
+        --clean)         CLEAN=true ;;
     esac
 done
 
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║  Studiomc — macOS Build                             ║"
+echo "║  Studiomc — macOS Production Build                  ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-
-# ── Preflight ────────────────────────────────────────────────────────────
-if [ "$(uname -s)" != "Darwin" ]; then
-    echo "✗ This script must be run on macOS."
-    exit 1
-fi
-
-ARCH="$(uname -m)"
-echo "  Platform: macOS $(sw_vers -productVersion) ($ARCH)"
+echo "  Platform:  $(uname -m) / macOS $(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
+echo "  Flutter:   $(flutter --version 2>/dev/null | head -1 || echo 'not found')"
 echo ""
 
-# ── 1. Build services ───────────────────────────────────────────────────
-if [ "$SKIP_SERVICES" = false ]; then
-    echo "═══ Step 1/4: Building Python services ═══"
-    bash "$SCRIPT_DIR/build_services.sh"
-    echo ""
+TOTAL_STEPS=3
+STEP=0
+
+# ── Step 1: Bundle Python services ──────────────────────────────────────
+
+STEP=$((STEP + 1))
+echo "═══ Step $STEP/$TOTAL_STEPS: Bundle Python services ═══"
+
+SERVICES_BUNDLE="$SERVICES_DIR/dist/studiomc_services"
+
+if [ "$SKIP_SERVICES" = true ]; then
+    echo "⊘ Skipping (--skip-services)"
+    if [ ! -d "$SERVICES_BUNDLE" ]; then
+        echo "✗ Services bundle not found at $SERVICES_BUNDLE"
+        echo "  Build services first or remove --skip-services"
+        exit 1
+    fi
+    echo "✓ Using existing bundle at $SERVICES_BUNDLE"
 else
-    echo "═══ Step 1/4: Skipping services build ═══"
+    CLEAN_ARG=""
+    if [ "$CLEAN" = true ]; then CLEAN_ARG="--clean"; fi
+    bash "$SCRIPT_DIR/build_services.sh" $CLEAN_ARG
 fi
-
-BUNDLE_SRC="$SERVICES_DIR/dist/studiomc_services"
-if [ ! -d "$BUNDLE_SRC" ]; then
-    echo "✗ Services bundle not found at $BUNDLE_SRC"
-    exit 1
-fi
-
-# ── 2. Build Flutter macOS app ──────────────────────────────────────────
-echo "═══ Step 2/4: Building Flutter macOS app ═══"
-cd "$FLUTTER_DIR"
-flutter build macos --release
-echo "✓ Flutter build complete"
 echo ""
 
-# ── 3. Embed services into .app bundle ──────────────────────────────────
-echo "═══ Step 3/4: Embedding services bundle ═══"
+# ── Step 2: Build Flutter macOS app ─────────────────────────────────────
 
-# Locate the .app — Flutter outputs to build/macos/Build/Products/Release/
+STEP=$((STEP + 1))
+echo "═══ Step $STEP/$TOTAL_STEPS: Flutter macOS release build ═══"
+
+if [ "$SKIP_FLUTTER" = true ]; then
+    echo "⊘ Skipping (--skip-flutter)"
+else
+    if [ "$CLEAN" = true ]; then
+        echo "→ Cleaning Flutter build…"
+        cd "$FLUTTER_DIR" && flutter clean
+    fi
+
+    cd "$FLUTTER_DIR"
+    flutter build macos --release
+    echo "✓ Flutter build complete"
+fi
+echo ""
+
+# ── Step 3: Embed services into .app bundle ─────────────────────────────
+
+STEP=$((STEP + 1))
+echo "═══ Step $STEP/$TOTAL_STEPS: Embed services into .app ═══"
+
 APP_DIR="$FLUTTER_DIR/build/macos/Build/Products/Release"
-APP_NAME="$(ls "$APP_DIR" | grep '\.app$' | head -1)"
+APP_NAME="$(ls "$APP_DIR" 2>/dev/null | grep '\.app$' | head -1 || true)"
 
 if [ -z "$APP_NAME" ]; then
-    echo "✗ Could not find .app in $APP_DIR"
+    echo "✗ No .app found in $APP_DIR"
     exit 1
 fi
 
 APP_PATH="$APP_DIR/$APP_NAME"
 RESOURCES_DIR="$APP_PATH/Contents/Resources"
+
+# Embed services bundle
 SERVICES_DEST="$RESOURCES_DIR/studiomc_services"
-
-echo "  App:      $APP_PATH"
-echo "  Target:   $SERVICES_DEST"
-
-rm -rf "$SERVICES_DEST"
-mkdir -p "$SERVICES_DEST"
-cp -R "$BUNDLE_SRC"/* "$SERVICES_DEST/"
-
-# Ensure the main executable is, in fact, executable
-chmod +x "$SERVICES_DEST/studiomc_services"
-
-BUNDLE_SIZE=$(du -sh "$SERVICES_DEST" | cut -f1)
-echo "✓ Services embedded ($BUNDLE_SIZE)"
-echo ""
-
-# ── 4. Code signing & notarization ──────────────────────────────────────
-echo "═══ Step 4/4: Code signing ═══"
-
-if [ "$DO_SIGN" = true ]; then
-    # These environment variables must be set in CI or locally:
-    #   APPLE_SIGNING_IDENTITY  — e.g. "Developer ID Application: ..."
-    #   APPLE_TEAM_ID
-    #   APPLE_ID
-    #   APPLE_APP_PASSWORD      — app-specific password for notarytool
-    IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
-    if [ -z "$IDENTITY" ]; then
-        echo "✗ APPLE_SIGNING_IDENTITY not set"
-        exit 1
-    fi
-
-    echo "→ Signing with identity: $IDENTITY"
-
-    # Sign all embedded binaries first (inside-out)
-    find "$SERVICES_DEST" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
-        -exec codesign --force --sign "$IDENTITY" --options runtime --timestamp {} \;
-
-    # Sign the main app
-    codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$APP_PATH"
-    echo "✓ Code signed"
-
-    # Notarize — notarytool requires a zip/dmg/pkg, not a bare .app
-    echo "→ Creating zip for notarization…"
-    NOTARIZE_ZIP="$APP_DIR/Studiomc-notarize.zip"
-    ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
-
-    echo "→ Submitting for notarization…"
-    xcrun notarytool submit "$NOTARIZE_ZIP" \
-        --apple-id "${APPLE_ID}" \
-        --team-id "${APPLE_TEAM_ID}" \
-        --password "${APPLE_APP_PASSWORD}" \
-        --wait
-
-    rm -f "$NOTARIZE_ZIP"
-    xcrun stapler staple "$APP_PATH"
-    echo "✓ Notarization complete"
-else
-    echo "⊘ Skipping (pass --sign to enable)"
-    echo "  For local testing, you can ad-hoc sign:"
-    echo "    codesign --force --deep --sign - \"$APP_PATH\""
+if [ -d "$SERVICES_DEST" ]; then
+    rm -rf "$SERVICES_DEST"
 fi
+cp -R "$SERVICES_BUNDLE" "$SERVICES_DEST"
+chmod +x "$SERVICES_DEST/studiomc_services" 2>/dev/null || true
+echo "✓ Services embedded into $APP_NAME"
+
+# Embed llama-server binaries if present
+LLAMA_BIN="$SERVICES_DIR/bin"
+if [ -d "$LLAMA_BIN" ]; then
+    BIN_DEST="$RESOURCES_DIR/bin"
+    mkdir -p "$BIN_DEST"
+    cp -R "$LLAMA_BIN"/* "$BIN_DEST/"
+    find "$BIN_DEST" -type f -exec chmod +x {} \;
+    echo "✓ llama-server binaries embedded"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────
+
+APP_SIZE="$(du -sh "$APP_PATH" | cut -f1)"
+VERSION="$(defaults read "$APP_PATH/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo 'unknown')"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║  ✓ macOS build complete                             ║"
 echo "╠══════════════════════════════════════════════════════╣"
-echo "║  App:   $APP_PATH"
-echo "║  Size:  $(du -sh "$APP_PATH" | cut -f1)"
+echo "║  App:      $APP_PATH"
+echo "║  Version:  $VERSION"
+echo "║  Size:     $APP_SIZE"
 echo "╚══════════════════════════════════════════════════════╝"
+echo ""
+echo "Next steps:"
+echo "  • Sign:  codesign --force --sign 'Developer ID Application' --options runtime --entitlements ... '$APP_PATH'"
+echo "  • DMG:   bash scripts/release/macos_dmg.sh"
+echo "  • Test:  open '$APP_PATH'"

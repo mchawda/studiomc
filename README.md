@@ -54,9 +54,23 @@ Studiomc is a desktop AI assistant that runs large language models entirely on y
 - **Investigate mode** — Full reasoning trace visibility: tool calls, retrieved chunks, and final answer in one view
 
 ### Inference
-- **SpliceLLM** — Our built-in out-of-core engine: run models of any size by **streaming layers from disk** one at a time. Model splitter turns HuggingFace checkpoints into per-layer safetensors; only one layer in memory at a time. Prefetch overlaps I/O with compute. Enables large models on limited VRAM/RAM (e.g. 70B on 4GB with clear “slow mode” expectations)
-- **Multi-backend inference** — Bundled engine, Ollama, LM Studio, or frontier APIs; router picks the right backend per model
+- **MLX-native inference** — GPU-accelerated on Apple Silicon via Metal. Preferred backend on Mac — leverages unified memory and Neural Engine for the fastest local inference
+- **SpliceLLM** — Our built-in out-of-core engine: run models of any size by **streaming layers from disk** one at a time. Model splitter turns HuggingFace checkpoints into per-layer safetensors; only one layer in memory at a time. Prefetch overlaps I/O with compute. Enables large models on limited VRAM/RAM (e.g. 70B on 4GB with clear "slow mode" expectations)
+- **Multi-backend inference** — MLX, llama.cpp, Ollama, LM Studio, or frontier APIs; router picks the best backend per model and hardware
 - **Performance dashboard** — Speed rating (Fast/OK/Slow), throughput, system metrics
+
+### Model Arena
+- **Side-by-side comparison** — Send the same prompt to two different models simultaneously
+- **Live metrics** — TTFT and tok/s displayed per model in real time
+- **Preference voting** — Vote for the better response to track model quality
+
+### Training & Fine-tuning
+- **MLX LoRA/QLoRA training** — GPU-accelerated fine-tuning on Apple Silicon via Metal. Train models locally without NVIDIA hardware
+- **PyTorch PEFT fallback** — LoRA training via PEFT on CUDA or CPU when MLX is unavailable
+- **Data Recipes** — Auto-generate training datasets from your documents (PDF, CSV, JSON, TXT). Supports Q&A pairs, summarization, instruction-response, and term extraction. Output in JSONL chat, Alpaca, or ShareGPT format
+- **LLM-powered data generation** — Use your loaded model to generate higher-quality training pairs from raw documents
+- **Training observability** — Live progress, loss tracking, and training history with re-run capability
+- **Model export** — Merge LoRA adapters into the base model and export as GGUF (for Ollama/llama.cpp/LM Studio), safetensors (for HuggingFace/vLLM), or push directly to HuggingFace Hub
 
 ## Quick Start
 
@@ -95,21 +109,26 @@ Requires: [Flutter SDK](https://docs.flutter.dev/get-started/install) (stable ch
 ```
 Flutter App ── HTTP/WS ──▶ Local Supervisor
                               ├── Inference Router
+                              │     ├── MLX (Apple Silicon GPU, preferred)
                               │     ├── Ollama (auto-detected)
                               │     ├── LM Studio (auto-detected)
+                              │     ├── llama.cpp (built-in, GGUF)
                               │     ├── SpliceLLM (built-in, out-of-core)
                               │     └── Frontier APIs (optional)
                               ├── Model Manager
                               ├── Document Service (extract, chunk, store)
                               ├── CLaRa (compression-native retrieval + cited answer)
                               ├── Orchestrator (recursive reasoning loop: plan → tool → answer)
-                              └── LRE (Local Reasoning Environment — tools for the loop)
+                              ├── LRE (Local Reasoning Environment — tools for the loop)
+                              ├── Training (MLX LoRA + PyTorch PEFT + export)
+                              └── Data Recipes (document → training dataset)
 ```
 
 - **Frontend:** Flutter (Dart) — macOS, Windows, iOS, Android
-- **Inference:** SpliceLLM (layer streaming from disk), optional Ollama / LM Studio / frontier API
+- **Inference:** MLX (Apple Silicon), llama.cpp, SpliceLLM (layer streaming), Ollama, LM Studio, frontier APIs
+- **Training:** MLX LoRA/QLoRA on Apple Silicon, PyTorch PEFT on CUDA/CPU, model export (GGUF, safetensors, HuggingFace)
 - **Models:** HuggingFace GGUF or safetensors; splitter produces per-layer files for out-of-core
-- **Backend:** Python FastAPI — documents, CLaRa RAG, orchestrator, LRE
+- **Backend:** Python FastAPI — documents, CLaRa RAG, orchestrator, LRE, training, data recipes
 - **Storage:** SQLite + filesystem
 
 ## Project Structure
@@ -118,26 +137,27 @@ Flutter App ── HTTP/WS ──▶ Local Supervisor
 studiomc/
   studiomc_app/           # Flutter app
     lib/
-      screens/            # Chat, Models, Documents, Settings, Training, etc.
+      screens/            # Chat, Models, Documents, Settings, Training, Arena
       widgets/            # Reusable UI components
       services/           # API clients, inference, orchestrator, settings
       models/             # Data models
   services/               # Python backend
     supervisor/           # Process manager
-    inference/            # Out-of-core engine, splitter, router (Ollama/LM Studio/frontier)
+    inference/            # MLX, llama.cpp, SpliceLLM, router (Ollama/LM Studio/frontier)
     model_manager/       # Model downloads, registry, autopilot
     documents/           # Document extraction, chunking, storage
     clara/                # CLaRa — compression-native retrieval + cited answer
     lre/                  # LRE — tools for orchestrator (search, grep, summarize, etc.)
     orchestrator/         # Recursive reasoning loop (plan → tool → observe → answer)
-    training/             # Private training / personalization
+    training/             # MLX LoRA, PyTorch PEFT, model export
+    data_recipes/         # Auto-generate training datasets from documents
   scripts/                # Build & release tooling
   product/                # Product specs & design docs
 ```
 
 ## Development Status
 
-The project follows four release phases. **Phase 1** (core chat, models, docs, CLaRa, SpliceLLM) is mostly complete. **Phases 2–4** (orchestrator/LRE, Personalize wizard, investigate mode) are in progress. See `product/product-roadmap.md` for details.
+The project follows four release phases. **Phase 1** (core chat, models, docs, CLaRa, SpliceLLM) is mostly complete. **Phases 2–4** (orchestrator/LRE, Personalize wizard, investigate mode) are in progress. **Model Studio** features (MLX inference, Model Arena, Data Recipes, training UX, model export) are in active development. See `product/product-roadmap.md` for details.
 
 ## Performance Targets
 
@@ -155,7 +175,9 @@ Contributions welcome. Please open an issue first to discuss what you'd like to 
 ## Credits
 
 Built on the shoulders of:
-- [AirLLM](https://github.com/lyogavin/airllm) — Inspired SpliceLLM’s out-of-core (layer-streaming) approach
+- [AirLLM](https://github.com/lyogavin/airllm) — Inspired SpliceLLM's out-of-core (layer-streaming) approach
+- [MLX](https://github.com/ml-explore/mlx) — Apple's array framework for Apple Silicon ML
+- [mlx-lm](https://github.com/ml-explore/mlx-examples) — MLX-based LLM inference and LoRA fine-tuning
 - [Ollama](https://ollama.com) — Local model runtime
 - [Flutter](https://flutter.dev) — Cross-platform UI
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from common.config import ADAPTERS_DIR
 from common.database import Database
 from training.lora_trainer import train_adapter, TrainingResult
+from training.mlx_trainer import MLX_TRAINING_AVAILABLE, train_mlx_lora
 from training.tokenizer_utils import count_tokens
 
 logger = logging.getLogger("training.trainer")
@@ -150,19 +151,49 @@ async def run_training(
         # ── Step 3: Run real training ───────────────────────────────────
         adapter_dir = ADAPTERS_DIR / adapter_id
 
-        result: TrainingResult = await train_adapter(
-            adapter_dir=adapter_dir,
-            base_model_id=base_model_id,
-            training_text=training_text,
-            source_type=source_type,
-            max_steps=50,
-            learning_rate=2e-4,
-            lora_rank=8,
-            lora_alpha=16,
-            lora_dropout=0.05,
-            max_seq_length=512,
-            progress_callback=_sync_progress_callback,
-        )
+        # Prefer MLX on Apple Silicon for GPU-accelerated training
+        if MLX_TRAINING_AVAILABLE:
+            logger.info("Using MLX trainer (Apple Silicon GPU acceleration)")
+            mlx_result = await train_mlx_lora(
+                adapter_dir=adapter_dir,
+                base_model_id=base_model_id,
+                training_text=training_text,
+                source_type=source_type,
+                max_steps=100,
+                learning_rate=1e-4,
+                lora_rank=8,
+                lora_alpha=16.0,
+                lora_dropout=0.0,
+                batch_size=1,
+                lora_layers=16,
+                use_qlora=False,
+                progress_callback=_sync_progress_callback,
+            )
+            # Convert MLXTrainingResult to TrainingResult for compatibility
+            result = TrainingResult(
+                success=mlx_result.success,
+                format=mlx_result.format,
+                adapter_dir=mlx_result.adapter_dir,
+                num_samples=mlx_result.num_samples,
+                num_steps=mlx_result.num_steps,
+                final_loss=mlx_result.final_loss,
+                error=mlx_result.error,
+                metrics=mlx_result.metrics,
+            )
+        else:
+            result: TrainingResult = await train_adapter(
+                adapter_dir=adapter_dir,
+                base_model_id=base_model_id,
+                training_text=training_text,
+                source_type=source_type,
+                max_steps=50,
+                learning_rate=2e-4,
+                lora_rank=8,
+                lora_alpha=16,
+                lora_dropout=0.05,
+                max_seq_length=512,
+                progress_callback=_sync_progress_callback,
+            )
 
         # ── Step 4: Finalize ────────────────────────────────────────────
         if not result.success:

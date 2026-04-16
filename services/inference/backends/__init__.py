@@ -128,6 +128,7 @@ from inference.backends.lmstudio import LMStudioClient
 from inference.backends.studiomc import StudiomcClient
 from inference.backends.frontier import FrontierClient
 from inference.backends.llamacpp import LlamaCppClient
+from inference.backends.mlx_backend import MLXClient
 
 __all__ = [
     # Data classes
@@ -145,4 +146,5 @@ __all__ = [
     "StudiomcClient",
     "LlamaCppClient",
     "FrontierClient",
+    "MLXClient",
 ]

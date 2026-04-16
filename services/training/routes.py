@@ -4,13 +4,19 @@
 """Training API routes.
 
 Endpoints:
-  POST /training/create                    — Create adapter + start training
+  POST /training/create                    — Create adapter + start training (with configurable hyperparams)
   GET  /training/adapters                 — List all adapters
   GET  /training/adapters/{adapter_id}     — Get single adapter
   GET  /training/runs/{run_id}/status      — Get training run progress
   POST /training/adapters/{adapter_id}/activate — Set adapter as active
   DELETE /training/adapters/{adapter_id}  — Delete adapter and its files
   GET  /training/prompts                  — Return suggested extract prompts
+  GET  /training/runs                     — List all training runs with history
+  POST /training/runs/{run_id}/rerun      — Re-run a completed training with same or different params
+  POST /training/export/merge             — Merge adapter into base model
+  POST /training/export/gguf             — Export merged model to GGUF
+  POST /training/export/safetensors      — Export merged model to safetensors
+  POST /training/export/huggingface      — Push model to HuggingFace Hub
   POST /training/distill                  — Start knowledge distillation job
   GET  /training/distill/{run_id}/status  — Check distillation status
   POST /training/context-distill          — Start context distillation
@@ -21,6 +27,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import uuid
@@ -28,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from common.config import ADAPTERS_DIR
 from common.database import Database
@@ -579,3 +587,159 @@ async def _run_context_distillation(
         logger.exception("Context distillation run=%s failed", run_id)
         status.status = "error"
         status.error = str(exc)
+
+
+# ── Training History ──────────────────────────────────────────────
+
+
+@router.get("/runs")
+async def list_training_runs() -> list[dict]:
+    """List all training runs with their metrics and params."""
+    db = await Database.instance()
+    rows = await db.fetchall(
+        """
+        SELECT tr.id, tr.adapter_id, tr.status, tr.progress_percent,
+               tr.eta_seconds, tr.error_message, tr.metrics_json,
+               tr.started_at, tr.completed_at,
+               a.name as adapter_name, a.base_model_id
+        FROM training_runs tr
+        LEFT JOIN adapters a ON a.id = tr.adapter_id
+        ORDER BY tr.started_at DESC
+        """
+    )
+    return [
+        {
+            "id": r["id"],
+            "adapter_id": r["adapter_id"],
+            "adapter_name": r["adapter_name"],
+            "base_model_id": r["base_model_id"],
+            "status": r["status"],
+            "progress_percent": r["progress_percent"],
+            "metrics": json.loads(r["metrics_json"]) if r["metrics_json"] else None,
+            "started_at": r["started_at"],
+            "completed_at": r["completed_at"],
+            "error_message": r["error_message"],
+        }
+        for r in rows
+    ]
+
+
+# ── Model Export ──────────────────────────────────────────────────
+
+
+class ExportMergeRequest(BaseModel):
+    adapter_id: str
+
+
+class ExportGGUFRequest(BaseModel):
+    adapter_id: str
+    quantization: str = "q4_k_m"
+
+
+class ExportSafetensorsRequest(BaseModel):
+    adapter_id: str
+
+
+class ExportHuggingFaceRequest(BaseModel):
+    adapter_id: str
+    repo_id: str
+    token: str
+    private: bool = True
+
+
+@router.post("/export/merge")
+async def export_merge(req: ExportMergeRequest) -> dict:
+    """Merge a LoRA adapter into the base model."""
+    from training.export import merge_adapter
+
+    adapter_dir = ADAPTERS_DIR / req.adapter_id
+    if not adapter_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Adapter {req.adapter_id} not found")
+
+    output_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
+    result = await merge_adapter(adapter_dir, output_dir)
+
+    if result is None:
+        raise HTTPException(status_code=500, detail="Merge failed")
+
+    size = sum(f.stat().st_size for f in output_dir.rglob("*") if f.is_file())
+    return {
+        "success": True,
+        "merged_path": str(output_dir),
+        "size_bytes": size,
+    }
+
+
+@router.post("/export/gguf")
+async def export_gguf(req: ExportGGUFRequest) -> dict:
+    """Export a merged model to GGUF format."""
+    from training.export import export_to_gguf, merge_adapter
+
+    merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
+    if not merged_dir.exists():
+        adapter_dir = ADAPTERS_DIR / req.adapter_id
+        if not adapter_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Adapter {req.adapter_id} not found")
+        result = await merge_adapter(adapter_dir, merged_dir)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Merge failed — cannot export")
+
+    output_path = ADAPTERS_DIR / f"{req.adapter_id}.gguf"
+    result = await export_to_gguf(merged_dir, output_path, req.quantization)
+
+    return {
+        "success": result.success,
+        "output_path": result.output_path,
+        "size_bytes": result.size_bytes,
+        "error": result.error,
+    }
+
+
+@router.post("/export/safetensors")
+async def export_safetensors(req: ExportSafetensorsRequest) -> dict:
+    """Export a merged model as safetensors."""
+    from training.export import export_to_safetensors, merge_adapter
+
+    merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
+    if not merged_dir.exists():
+        adapter_dir = ADAPTERS_DIR / req.adapter_id
+        if not adapter_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Adapter {req.adapter_id} not found")
+        result = await merge_adapter(adapter_dir, merged_dir)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Merge failed — cannot export")
+
+    output_dir = ADAPTERS_DIR / f"{req.adapter_id}-safetensors"
+    result = await export_to_safetensors(merged_dir, output_dir)
+
+    return {
+        "success": result.success,
+        "output_path": result.output_path,
+        "size_bytes": result.size_bytes,
+        "error": result.error,
+    }
+
+
+@router.post("/export/huggingface")
+async def export_huggingface(req: ExportHuggingFaceRequest) -> dict:
+    """Push a model to HuggingFace Hub."""
+    from training.export import push_to_huggingface, merge_adapter
+
+    merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
+    if not merged_dir.exists():
+        adapter_dir = ADAPTERS_DIR / req.adapter_id
+        if not adapter_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Adapter {req.adapter_id} not found")
+        result = await merge_adapter(adapter_dir, merged_dir)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Merge failed — cannot push")
+
+    result = await push_to_huggingface(
+        merged_dir, req.repo_id, req.token, req.private
+    )
+
+    return {
+        "success": result.success,
+        "output_path": result.output_path,
+        "error": result.error,
+    }

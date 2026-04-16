@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
@@ -2162,7 +2163,7 @@ $truncated
                 _miniButton(theme, 'Activate', Icons.play_arrow, () => _activateAdapter(a.id)),
               if (a.isActive)
                 _miniButton(theme, 'Compare vs base', Icons.compare_arrows, () {
-                  _showSnack('A/B comparison coming soon');
+                  context.go('/arena');
                 }),
               if (a.isActive) const SizedBox(width: 8),
               if (a.isActive)

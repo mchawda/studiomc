@@ -284,6 +284,22 @@ class _AppShellState extends State<AppShell> {
 
           const SizedBox(height: 4),
 
+          // Arena
+          _buildRailIcon(
+            context,
+            child: Icon(
+              Icons.compare_arrows_rounded,
+              size: 22,
+              color: currentPath == '/arena'
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.secondary,
+            ),
+            tooltip: 'Arena',
+            onTap: () => context.go('/arena'),
+          ),
+
+          const SizedBox(height: 4),
+
           // Discover / Models
           _buildRailIcon(
             context,

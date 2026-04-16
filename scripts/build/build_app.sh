@@ -1,96 +1,104 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────
-# build_app.sh — Build the complete Studiomc application
+# build_app.sh — Platform-agnostic build (services + Flutter + embed)
 #
-# Steps:
-#   1. Build the Python services bundle
-#   2. Copy the bundle into the Flutter app's bundled-resources directory
-#   3. Build the Flutter desktop app for the current platform
+# Detects the current OS and delegates to the platform-specific build.
+# Used by Makefile targets that don't specify a platform explicitly
+# (e.g. make build-app, make build-linux).
 #
 # Usage:
-#   bash scripts/build/build_app.sh [--skip-services]
+#   bash scripts/build/build_app.sh [--skip-services] [--skip-flutter] [--clean]
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SERVICES_DIR="$PROJECT_ROOT/services"
 FLUTTER_DIR="$PROJECT_ROOT/studiomc_app"
+SERVICES_DIR="$PROJECT_ROOT/services"
 
 SKIP_SERVICES=false
+SKIP_FLUTTER=false
+CLEAN=false
+
 for arg in "$@"; do
     case $arg in
         --skip-services) SKIP_SERVICES=true ;;
+        --skip-flutter)  SKIP_FLUTTER=true ;;
+        --clean)         CLEAN=true ;;
     esac
 done
 
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║  Studiomc — Full Application Build                  ║"
-echo "╚══════════════════════════════════════════════════════╝"
-echo ""
+OS="$(uname -s)"
 
-# ── 1. Build Python services ────────────────────────────────────────────
-if [ "$SKIP_SERVICES" = false ]; then
-    echo "═══ Step 1/3: Building Python services bundle ═══"
-    bash "$SCRIPT_DIR/build_services.sh"
-    echo ""
-else
-    echo "═══ Step 1/3: Skipping services build (--skip-services) ═══"
-    if [ ! -d "$SERVICES_DIR/dist/studiomc_services" ]; then
-        echo "✗ Services bundle not found. Run without --skip-services first."
+case "$OS" in
+    Darwin)
+        echo "Detected macOS — delegating to build_macos.sh"
+        exec bash "$SCRIPT_DIR/build_macos.sh" "$@"
+        ;;
+    Linux)
+        echo "╔══════════════════════════════════════════════════════╗"
+        echo "║  Studiomc — Linux Production Build                  ║"
+        echo "╚══════════════════════════════════════════════════════╝"
+        echo ""
+
+        SERVICES_BUNDLE="$SERVICES_DIR/dist/studiomc_services"
+
+        # Step 1: Build services
+        if [ "$SKIP_SERVICES" = true ]; then
+            echo "⊘ Skipping services build (--skip-services)"
+            if [ ! -d "$SERVICES_BUNDLE" ]; then
+                echo "✗ Services bundle not found at $SERVICES_BUNDLE"
+                exit 1
+            fi
+        else
+            CLEAN_ARG=""
+            if [ "$CLEAN" = true ]; then CLEAN_ARG="--clean"; fi
+            bash "$SCRIPT_DIR/build_services.sh" $CLEAN_ARG
+        fi
+
+        # Step 2: Build Flutter
+        if [ "$SKIP_FLUTTER" = true ]; then
+            echo "⊘ Skipping Flutter build (--skip-flutter)"
+        else
+            if [ "$CLEAN" = true ]; then
+                cd "$FLUTTER_DIR" && flutter clean
+            fi
+            cd "$FLUTTER_DIR"
+            flutter build linux --release
+            echo "✓ Flutter Linux build complete"
+        fi
+
+        # Step 3: Embed services
+        BUNDLE_DIR="$FLUTTER_DIR/build/linux/x64/release/bundle"
+        if [ ! -d "$BUNDLE_DIR" ]; then
+            echo "✗ Flutter Linux build not found at $BUNDLE_DIR"
+            exit 1
+        fi
+
+        SERVICES_DEST="$BUNDLE_DIR/studiomc_services"
+        if [ -d "$SERVICES_DEST" ]; then rm -rf "$SERVICES_DEST"; fi
+        cp -R "$SERVICES_BUNDLE" "$SERVICES_DEST"
+        chmod +x "$SERVICES_DEST/studiomc_services" 2>/dev/null || true
+        echo "✓ Services embedded into Linux bundle"
+
+        echo ""
+        echo "╔══════════════════════════════════════════════════════╗"
+        echo "║  ✓ Linux build complete                             ║"
+        echo "╠══════════════════════════════════════════════════════╣"
+        echo "║  Bundle: $BUNDLE_DIR"
+        echo "╚══════════════════════════════════════════════════════╝"
+        echo ""
+        echo "Next steps:"
+        echo "  • AppImage: bash scripts/release/linux_appimage.sh"
+        echo "  • Test:     $BUNDLE_DIR/studiomc_app"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo "Detected Windows — use scripts/build_windows.ps1 instead"
+        echo "  powershell -File scripts/build_windows.ps1"
         exit 1
-    fi
-fi
-
-# ── 2. Copy bundle into Flutter app resources ───────────────────────────
-echo "═══ Step 2/3: Staging services bundle ═══"
-
-BUNDLE_SRC="$SERVICES_DIR/dist/studiomc_services"
-
-# Detect platform and set destination
-case "$(uname -s)" in
-    Darwin*)
-        # macOS: Flutter build will pick up from a known staging directory.
-        # The actual embedding into the .app bundle is handled by build_macos.sh.
-        BUNDLE_DEST="$FLUTTER_DIR/build/_services_stage"
         ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-        BUNDLE_DEST="$FLUTTER_DIR/build/_services_stage"
-        ;;
-    Linux*)
-        BUNDLE_DEST="$FLUTTER_DIR/build/_services_stage"
+    *)
+        echo "✗ Unsupported platform: $OS"
+        exit 1
         ;;
 esac
-
-echo "→ Copying services bundle to $BUNDLE_DEST"
-rm -rf "$BUNDLE_DEST"
-mkdir -p "$BUNDLE_DEST"
-cp -R "$BUNDLE_SRC"/* "$BUNDLE_DEST/"
-echo "✓ Services staged"
-
-# ── 3. Build Flutter app ────────────────────────────────────────────────
-echo ""
-echo "═══ Step 3/3: Building Flutter desktop app ═══"
-cd "$FLUTTER_DIR"
-
-case "$(uname -s)" in
-    Darwin*)
-        flutter build macos --release
-        echo "✓ Flutter macOS build complete"
-        echo "  Output: $FLUTTER_DIR/build/macos/Build/Products/Release/"
-        ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-        flutter build windows --release
-        echo "✓ Flutter Windows build complete"
-        echo "  Output: $FLUTTER_DIR/build/windows/x64/runner/Release/"
-        ;;
-    Linux*)
-        flutter build linux --release
-        echo "✓ Flutter Linux build complete"
-        echo "  Output: $FLUTTER_DIR/build/linux/x64/release/bundle/"
-        ;;
-esac
-
-echo ""
-echo "✓ Full application build complete!"
-echo "  Use the platform-specific release script to create an installer."

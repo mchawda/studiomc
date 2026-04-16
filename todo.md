@@ -20,6 +20,16 @@ The app is unsigned, so macOS Gatekeeper blocks installation with "unidentified 
 - [x] **Release.entitlements** — Verified correct (sandbox disabled, network + file access enabled)
 - [x] **README** — Removed Gatekeeper bypass note
 
+## Build Pipeline — DONE
+
+- [x] **`scripts/build/build_services.sh`** — Bundle Python services with PyInstaller into `services/dist/studiomc_services/`
+- [x] **`scripts/build/build_macos.sh`** — Full macOS build: services → Flutter → embed into .app
+- [x] **`scripts/build/build_app.sh`** — Platform-agnostic build dispatcher (macOS delegates to `build_macos.sh`, Linux builds inline)
+- [x] **`scripts/build_macos.sh`** — Wrapper that delegates to `scripts/build/build_macos.sh` (backwards compat)
+- [x] **`scripts/build-macos.sh`** — Convenience wrapper: build + DMG in one step
+- [x] **`Makefile`** — All targets resolve (`make build-services`, `make build-macos`, `make build-app`, `make build-linux`, `make release-macos`, `make release-linux`)
+- [x] **CI references verified** — `release.yml` calls `scripts/build/build_services.sh` and `scripts/build/build_macos.sh`, both exist
+
 ## Result
 
 Push a tag to trigger the full pipeline:

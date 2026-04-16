@@ -48,6 +48,7 @@ LRE_PORT = 8104
 ORCHESTRATOR_PORT = 8105
 SUPERVISOR_PORT = 8110
 TRAINING_PORT = 8106
+DATA_RECIPES_PORT = 8107
 
 ALL_PORTS = {
     "inference": INFERENCE_PORT,
@@ -57,6 +58,7 @@ ALL_PORTS = {
     "lre": LRE_PORT,
     "orchestrator": ORCHESTRATOR_PORT,
     "training": TRAINING_PORT,
+    "data_recipes": DATA_RECIPES_PORT,
     "supervisor": SUPERVISOR_PORT,
 }
 

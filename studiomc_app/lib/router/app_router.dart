@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/onboarding_screen.dart';
 import '../screens/chat_screen.dart';
+import '../screens/arena_screen.dart';
 import '../screens/models_screen.dart';
 import '../screens/documents_screen.dart';
 import '../screens/training_screen.dart';
@@ -54,6 +55,10 @@ GoRouter buildAppRouter(SettingsService settings) {
                 chatId: chatId,
               );
             },
+          ),
+          GoRoute(
+            path: '/arena',
+            builder: (context, state) => const ArenaScreen(),
           ),
           GoRoute(
             path: '/models',
