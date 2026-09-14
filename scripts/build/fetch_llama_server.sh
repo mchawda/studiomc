@@ -31,24 +31,30 @@ VERSION="${LLAMA_CPP_VERSION:-}"
 UNAME_S="$(uname -s)"
 UNAME_M="$(uname -m)"
 
+# Upstream publishes ``llama-<tag>-bin-<platform>.(zip|tar.gz)``; the
+# archive type changed from zip to tar.gz for macOS/Linux in 2026, so match
+# on the platform stem and accept either extension.
 case "$UNAME_S/$UNAME_M" in
-    Darwin/arm64)   ASSET_PATTERN="macos-arm64.zip" ;;
-    Darwin/x86_64)  ASSET_PATTERN="macos-x64.zip" ;;
-    Linux/x86_64)   ASSET_PATTERN="ubuntu-x64.zip" ;;
-    Linux/aarch64)  ASSET_PATTERN="ubuntu-arm64.zip" ;;
+    Darwin/arm64)   ASSET_PATTERN="bin-macos-arm64" ;;
+    Darwin/x86_64)  ASSET_PATTERN="bin-macos-x64" ;;
+    Linux/x86_64)   ASSET_PATTERN="bin-ubuntu-x64" ;;
+    Linux/aarch64)  ASSET_PATTERN="bin-ubuntu-arm64" ;;
     MINGW*/*|MSYS*/*|CYGWIN*/*)
-                    ASSET_PATTERN="win-avx2-x64.zip" ;;
+                    ASSET_PATTERN="bin-win-cpu-x64" ;;
     *) echo "✗ Unsupported platform: $UNAME_S/$UNAME_M" ; exit 1 ;;
 esac
 
-echo "Platform: $UNAME_S/$UNAME_M  →  asset pattern '*$ASSET_PATTERN'"
+echo "Platform: $UNAME_S/$UNAME_M  →  asset pattern '*$ASSET_PATTERN.(zip|tar.gz)'"
 
 # ── 2. Resolve release tag ──────────────────────────────────────────────
 
 if [ -z "$VERSION" ]; then
-    echo "→ Querying latest release of $REPO …"
-    VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | grep -E '"tag_name"' | head -1 | cut -d'"' -f4)"
+    # ``/releases/latest`` points at the semver release (e.g. v0.4.0) which
+    # carries no binaries; the prebuilt binaries are attached to the
+    # ``b<build>`` pre-releases, so take the newest of those instead.
+    echo "→ Querying latest binary build of $REPO …"
+    VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=20" \
+        | grep -E '"tag_name": *"b[0-9]+"' | head -1 | cut -d'"' -f4)"
     if [ -z "$VERSION" ]; then
         echo "✗ Could not determine latest release tag" >&2
         exit 1
@@ -61,11 +67,11 @@ echo "Release: $VERSION"
 API_URL="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
 ASSET_URL="$(curl -fsSL "$API_URL" \
     | grep '"browser_download_url"' \
-    | grep -E "$ASSET_PATTERN\"" \
+    | grep -E "$ASSET_PATTERN\.(zip|tar\.gz)\"" \
     | head -1 | cut -d'"' -f4 || true)"
 
 if [ -z "$ASSET_URL" ]; then
-    echo "✗ No asset matching '*$ASSET_PATTERN' in release $VERSION" >&2
+    echo "✗ No asset matching '*$ASSET_PATTERN.(zip|tar.gz)' in release $VERSION" >&2
     echo "  Browse $API_URL to inspect available assets." >&2
     exit 1
 fi
@@ -74,12 +80,19 @@ echo "Asset: $ASSET_URL"
 
 # ── 4. Download + extract ───────────────────────────────────────────────
 
-ARCHIVE="$TMP_DIR/llama.zip"
+case "$ASSET_URL" in
+    *.tar.gz) ARCHIVE="$TMP_DIR/llama.tar.gz" ;;
+    *)        ARCHIVE="$TMP_DIR/llama.zip" ;;
+esac
 echo "→ Downloading…"
 curl -fsSL "$ASSET_URL" -o "$ARCHIVE"
 
 echo "→ Extracting…"
-unzip -q "$ARCHIVE" -d "$TMP_DIR/extracted"
+mkdir -p "$TMP_DIR/extracted"
+case "$ARCHIVE" in
+    *.tar.gz) tar -xzf "$ARCHIVE" -C "$TMP_DIR/extracted" ;;
+    *)        unzip -q "$ARCHIVE" -d "$TMP_DIR/extracted" ;;
+esac
 
 # Locate the binary inside the archive (release layout varies a bit)
 BINARY_NAME="llama-server"
