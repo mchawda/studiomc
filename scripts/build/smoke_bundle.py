@@ -211,7 +211,20 @@ def run_selftest(bundle: Path, home: Path) -> None:
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
-        raise SmokeFailure(f"--selftest exited with {result.returncode}")
+        combined = f"{result.stdout}\n{result.stderr}"
+        fail_modules = [
+            line.split("FAIL", 1)[1].strip()
+            for line in combined.splitlines()
+            if "[selftest] FAIL" in line
+        ]
+        hint = ""
+        if "page-aligned" in combined or "libscipy_openblas" in combined:
+            hint = (
+                " (PyInstaller strip corrupted numpy OpenBLAS on Linux; "
+                "studiomc_services.spec must set strip=False off macOS)"
+            )
+        detail = f": {', '.join(fail_modules[:3])}" if fail_modules else ""
+        raise SmokeFailure(f"--selftest exited with {result.returncode}{detail}{hint}")
     imported = sum(1 for line in result.stdout.splitlines() if line.startswith("[selftest] ok"))
     ok(f"--selftest passed inside the frozen bundle in {time.monotonic() - t0:.1f}s ({imported} checks)")
 

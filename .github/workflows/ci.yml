@@ -133,6 +133,8 @@ jobs:
         run: du -sh services/dist/studiomc_services || true
 
   # ── Frozen bundle cross-check (Linux desktop not shipped) ─────────────
+  # Advisory only: catches PyInstaller regressions (e.g. Linux strip
+  # corrupting numpy OpenBLAS). Shipped platforms are macos-arm64 + Windows.
   bundle-smoke-ubuntu:
     name: Bundle smoke (ubuntu-x64, advisory)
     runs-on: ubuntu-latest
