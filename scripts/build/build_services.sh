@@ -91,6 +91,32 @@ if [ "$CLEAN" = true ] || [ -d "$DIST_DIR" ]; then
     echo "✓ Clean"
 fi
 
+# ── 4b. Require the llama-server sidecar ────────────────────────────────
+# Without it the Core bundle has no built-in inference engine and a fresh
+# user (no Ollama) cannot chat at all. Fetch it if missing.
+
+LLAMA_BIN_NAME="llama-server"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) LLAMA_BIN_NAME="llama-server.exe" ;;
+esac
+if [ ! -x "$SERVICES_DIR/bin/$LLAMA_BIN_NAME" ]; then
+    echo "→ llama-server not found in services/bin — fetching…"
+    bash "$SCRIPT_DIR/fetch_llama_server.sh"
+fi
+echo "✓ llama-server: $(cat "$SERVICES_DIR/bin/VERSION" 2>/dev/null || echo present)"
+
+# ── 4c. Stamp build identity ────────────────────────────────────────────
+# Shipped inside the bundle; the supervisor reports it from /health so the
+# desktop app can tell a stale supervisor from its own.
+
+APP_VERSION="$(grep -E '^version:' "$PROJECT_ROOT/studiomc_app/pubspec.yaml" | head -1 | sed -E 's/^version:[[:space:]]*//' | tr -d '\r')"
+GIT_SHA="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$SERVICES_DIR/BUILD_INFO.json" <<EOF
+{"version": "${APP_VERSION:-unknown}", "git_sha": "$GIT_SHA", "built_at": "$BUILT_AT"}
+EOF
+echo "✓ BUILD_INFO: version=${APP_VERSION:-unknown} sha=$GIT_SHA"
+
 # ── 5. Run PyInstaller ──────────────────────────────────────────────────
 
 echo "→ Running PyInstaller (this may take a few minutes)…"
@@ -119,6 +145,22 @@ if [ ! -f "$DIST_DIR/$EXEC_NAME" ]; then
 fi
 
 chmod +x "$DIST_DIR/$EXEC_NAME" 2>/dev/null || true
+
+if [ ! -x "$DIST_DIR/_internal/bin/$LLAMA_BIN_NAME" ] && [ ! -f "$DIST_DIR/_internal/bin/$LLAMA_BIN_NAME" ]; then
+    echo "✗ Build failed — llama-server missing from $DIST_DIR/_internal/bin"
+    exit 1
+fi
+chmod +x "$DIST_DIR/_internal/bin/$LLAMA_BIN_NAME" 2>/dev/null || true
+
+# ── 7. Smoke-test the frozen bundle ─────────────────────────────────────
+# Every historical "backend not connecting in production" bug was a
+# module that imported fine in the dev venv and failed inside the frozen
+# bundle. Catch that here, on the build machine, not on the user's.
+
+if [ "${SKIP_BUNDLE_SMOKE:-0}" != "1" ]; then
+    echo "→ Smoke-testing the frozen bundle…"
+    python "$SCRIPT_DIR/smoke_bundle.py" --bundle "$DIST_DIR"
+fi
 
 BUNDLE_SIZE="$(du -sh "$DIST_DIR" | cut -f1)"
 FILE_COUNT="$(find "$DIST_DIR" -type f | wc -l | tr -d ' ')"
