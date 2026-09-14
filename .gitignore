@@ -41,4 +41,7 @@ product/
 product-plan/
 Blueprint.md
 services/build/
+# Fetched by scripts/build/fetch_llama_server.sh; stamped by build_services.sh
+services/bin/
+services/BUILD_INFO.json
 .studiomc_test/

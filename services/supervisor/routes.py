@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from common.build_info import runtime_identity
 from common.database import Database
 from common.pro_pack import REQUIRED_PRO_VERSION
 from common.pro_pack import get_status as pro_pack_status
@@ -55,8 +56,23 @@ def _mgr() -> ProcessManager:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "supervisor"}
+async def health() -> dict[str, object]:
+    """Liveness, readiness and identity.
+
+    ``status: ok`` means the supervisor process is serving. ``ready`` means
+    it has finished spawning its children; until then ``phase`` says what
+    it is doing and ``startup_error`` why it stopped, if it did.
+
+    The desktop app compares ``executable`` against the binary inside its
+    own bundle before reusing a supervisor it finds on port 8110. Anything
+    else (an older install, a dev interpreter) is shut down and replaced.
+    """
+    return {
+        "status": "ok",
+        "service": "supervisor",
+        **_mgr().startup.to_dict(),
+        **runtime_identity(),
+    }
 
 
 # ── Service status ───────────────────────────────────────────────────────

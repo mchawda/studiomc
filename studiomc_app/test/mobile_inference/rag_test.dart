@@ -83,4 +83,64 @@ void main() {
     expect(engine.lastPrompt, contains('Refunds'));
     expect(engine.lastPrompt, contains('How long for a refund?'));
   });
+
+  test('OnDeviceRag numbers sources like CLaRa and returns citations', () async {
+    final engine = StubMobileInferenceEngine();
+    await engine.load(const LoadModelRequest(
+      modelId: 'studiomc-4b',
+      modelPath: '/models/4b.gguf',
+    ));
+    engine.cannedCompletion =
+        'Refunds take 14 days [Source 1]. Shipping is five days [Source 2].';
+
+    final rag = OnDeviceRag(engine: engine, store: InMemoryChunkStore());
+    await rag.index(
+      documentId: 'handbook',
+      text: 'Refunds are issued within 14 days.',
+      maxChars: 400,
+    );
+    await rag.index(
+      documentId: 'shipping',
+      text: 'Shipping takes five business days.',
+      maxChars: 400,
+    );
+
+    final gen = await rag.retrieveThenGenerateCited(
+      query: 'How long for a refund and shipping?',
+      topK: 2,
+    );
+    expect(gen.citations, hasLength(2));
+    expect(gen.citations.map((c) => c.sourceNumber), [1, 2]);
+
+    final answer = (await gen.tokens.toList()).join();
+    final prompt = engine.lastPrompt!;
+    // CLaRa prompt shape: numbered source blocks + cite instruction + refusal rule.
+    expect(prompt, contains('[Source 1 | doc='));
+    expect(prompt, contains('[Source 2 | doc='));
+    expect(prompt, contains('Cite each claim inline as [Source N]'));
+    expect(prompt, contains('cannot answer from the given sources'));
+    expect(prompt, contains('### Question'));
+
+    final cited = gen.citedIn(answer);
+    expect(cited, hasLength(2));
+    expect(cited.map((c) => c.documentId).toSet(), {'handbook', 'shipping'});
+    // Desktop Citation field names, so services/eval can score this directly.
+    final json = cited.first.toJson();
+    expect(json.keys, containsAll(['document_id', 'chunk_index', 'snippet', 'relevance_score']));
+    // Unknown [Source 9] is dropped; duplicates are collapsed.
+    expect(gen.citedIn('x [Source 1] y [Source 1] z [Source 9]'), hasLength(1));
+  });
+
+  test('OnDeviceRag with an empty store still prompts for a refusal', () async {
+    final engine = StubMobileInferenceEngine();
+    await engine.load(const LoadModelRequest(
+      modelId: 'studiomc-0.6b',
+      modelPath: '/models/tiny.gguf',
+    ));
+    final rag = OnDeviceRag(engine: engine, store: InMemoryChunkStore());
+    final gen = await rag.retrieveThenGenerateCited(query: 'Who is the CEO?');
+    expect(gen.citations, isEmpty);
+    await gen.tokens.drain<void>();
+    expect(engine.lastPrompt, contains('(no sources retrieved)'));
+  });
 }

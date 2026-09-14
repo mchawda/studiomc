@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: LicenseRef-NIA-Proprietary
+# Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
+#
+# ══════════════════════════════════════════════════════════════════════════
+# Studiomc: Pull-request CI
+#
+# Runs on every PR and push to main so first-launch regressions are caught
+# before a release tag is cut. Three layers, cheapest first:
+#
+#   1. services-tests   pytest under the Core-only dependency set. torch is
+#                       not installed, so any Core module that imports it
+#                       fails here instead of on a user's machine.
+#   2. bundle-smoke     Build the PyInstaller bundle exactly like release.yml
+#                       (ubuntu + macos-arm64), run `--selftest` inside the
+#                       frozen executable, then launch it with a clean data
+#                       dir and require /health, readiness and every child's
+#                       health within the Flutter app's real timeouts.
+#   3. flutter          `flutter analyze` + `flutter test` for the desktop app.
+#
+# Apple signing/notarisation and the DMG itself still only happen in
+# release.yml; this workflow needs no secrets.
+# ══════════════════════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.38.9"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ── Unit tests + Core/Pro import boundary ─────────────────────────────
+  services-tests:
+    name: Services tests (Core deps only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: services/pyproject.toml
+
+      - name: Install Core dependencies
+        working-directory: services
+        run: pip install ".[dev]"
+
+      - name: Assert Pro-only libraries are absent from the Core environment
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          pro = ["torch", "transformers", "peft", "accelerate", "sentence_transformers",
+                 "safetensors", "mlx", "mlx_lm", "llama_cpp", "unsloth"]
+          present = [m for m in pro if importlib.util.find_spec(m) is not None]
+          if present:
+              print(f"::error::Pro-only packages leaked into the Core install: {present}")
+              sys.exit(1)
+          print("Core environment is torch-free")
+          PY
+
+      - name: Ruff
+        working-directory: services
+        run: ruff check .
+
+      - name: Pytest
+        working-directory: services
+        env:
+          STUDIOMC_HOME: ${{ runner.temp }}/studiomc-home
+          PYTHONPATH: .
+        run: python -m pytest -q
+
+  # ── Frozen bundle: build, selftest, first launch ──────────────────────
+  bundle-smoke:
+    name: Bundle smoke (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: ubuntu-x64
+            runs-on: ubuntu-latest
+          - label: macos-arm64
+            runs-on: macos-14
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Same layout release.yml expects: services/.venv with Core deps and
+      # PyInstaller. No torch, so the bundle cannot accidentally contain it.
+      - name: Install Core dependencies + PyInstaller
+        working-directory: services
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install . pyinstaller
+
+      # The Core bundle has no inference engine without this binary. A
+      # failure here means a release built from this commit would ship an
+      # app that connects but can never load a model.
+      - name: Fetch llama-server sidecar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
+
+      # build_services.sh smoke-tests the bundle itself; skip that here so
+      # the smoke is its own step with its own log.
+      - name: Build services bundle
+        env:
+          SKIP_BUNDLE_SMOKE: "1"
+        run: bash scripts/build/build_services.sh
+
+      # Runs --selftest inside the frozen executable, then a clean first
+      # launch: supervisor /health and readiness, every child healthy,
+      # llama-server found, hardware scan + recommendation, clean shutdown
+      # and a SIGKILL of the supervisor that must take every child with it.
+      - name: Smoke test frozen bundle (clean first launch)
+        run: python3 scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services
+
+      - name: Report bundle size
+        if: always()
+        run: du -sh services/dist/studiomc_services || true
+
+  # ── Flutter desktop app ───────────────────────────────────────────────
+  flutter:
+    name: Flutter analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        working-directory: studiomc_app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: studiomc_app
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        working-directory: studiomc_app
+        run: flutter test

@@ -115,15 +115,20 @@ cp -R "$SERVICES_BUNDLE" "$SERVICES_DEST"
 chmod +x "$SERVICES_DEST/studiomc_services" 2>/dev/null || true
 echo "✓ Services embedded into $APP_NAME"
 
-# Embed llama-server binaries if present
-LLAMA_BIN="$SERVICES_DIR/bin"
-if [ -d "$LLAMA_BIN" ]; then
-    BIN_DEST="$RESOURCES_DIR/bin"
-    mkdir -p "$BIN_DEST"
-    cp -R "$LLAMA_BIN"/* "$BIN_DEST/"
-    find "$BIN_DEST" -type f -exec chmod +x {} \;
-    echo "✓ llama-server binaries embedded"
+# llama-server ships INSIDE the services bundle (_internal/bin, added as
+# data by studiomc_services.spec) so every platform gets it the same way.
+# Verify it made it into the .app rather than copying a second 24 MB copy.
+if [ ! -f "$SERVICES_DEST/_internal/bin/llama-server" ]; then
+    echo "✗ llama-server missing from $SERVICES_DEST/_internal/bin"
+    echo "  Run: bash scripts/build/fetch_llama_server.sh && bash scripts/build/build_services.sh"
+    exit 1
 fi
+chmod +x "$SERVICES_DEST/_internal/bin/llama-server"
+echo "✓ llama-server sidecar present ($(cat "$SERVICES_DEST/_internal/bin/VERSION" 2>/dev/null || echo '?'))"
+
+# Remove a stale copy left by older build scripts so signing/notarization
+# does not have to cover two of everything.
+rm -rf "$RESOURCES_DIR/bin"
 
 # ── Summary ──────────────────────────────────────────────────────────────
 
@@ -140,6 +145,7 @@ echo "║  Size:     $APP_SIZE"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 echo "Next steps:"
+echo "  • Smoke: python3 scripts/build/smoke_bundle.py --app '$APP_PATH'   (make smoke-fresh-install)"
 echo "  • Sign:  codesign --force --sign 'Developer ID Application' --options runtime --entitlements ... '$APP_PATH'"
 echo "  • DMG:   bash scripts/release/macos_dmg.sh"
 echo "  • Test:  open '$APP_PATH'"

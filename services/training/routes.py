@@ -38,6 +38,7 @@ from pydantic import BaseModel
 
 from common.config import ADAPTERS_DIR
 from common.database import Database
+from common.pro_pack import require as require_pro_pack
 from common.schemas import (
     Adapter,
     ContextDistillRequest,
@@ -76,6 +77,9 @@ async def health() -> dict[str, str]:
 @router.post("/create")
 async def create_training(req: TrainingCreateRequest) -> dict[str, str]:
     """Create adapter + start training."""
+    # SPLIT_BUNDLE.md contract: gate every torch-bound endpoint before any
+    # heavy work so a Core-only install gets a structured 412, not a 500.
+    require_pro_pack("training")
     db = await Database.instance()
 
     # Generate IDs
@@ -326,6 +330,7 @@ async def get_prompts() -> list[SuggestedExtractPrompt]:
 @router.post("/distill", response_model=DistillStatus)
 async def start_distillation(req: DistillRequest) -> DistillStatus:
     """Start a knowledge distillation job (teacher → student)."""
+    require_pro_pack("training")
     if req.use_cloud_teacher and not req.cloud_consent:
         raise HTTPException(
             status_code=400,
@@ -468,6 +473,7 @@ async def _run_distillation(
 @router.post("/context-distill", response_model=ContextDistillStatus)
 async def start_context_distillation(req: ContextDistillRequest) -> ContextDistillStatus:
     """Start a context distillation run."""
+    require_pro_pack("training")
     run_id = f"ctx-distill-{uuid.uuid4().hex[:8]}"
     status = ContextDistillStatus(
         run_id=run_id,
@@ -660,6 +666,7 @@ class ExportHuggingFaceRequest(BaseModel):
 @router.post("/export/merge")
 async def export_merge(req: ExportMergeRequest) -> dict:
     """Merge a LoRA adapter into the base model."""
+    require_pro_pack("training")
     from training.export import merge_adapter
 
     adapter_dir = ADAPTERS_DIR / req.adapter_id
@@ -683,6 +690,7 @@ async def export_merge(req: ExportMergeRequest) -> dict:
 @router.post("/export/gguf")
 async def export_gguf(req: ExportGGUFRequest) -> dict:
     """Export a merged model to GGUF format."""
+    require_pro_pack("training")
     from training.export import export_to_gguf, merge_adapter
 
     merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
@@ -708,6 +716,7 @@ async def export_gguf(req: ExportGGUFRequest) -> dict:
 @router.post("/export/safetensors")
 async def export_safetensors(req: ExportSafetensorsRequest) -> dict:
     """Export a merged model as safetensors."""
+    require_pro_pack("training")
     from training.export import export_to_safetensors, merge_adapter
 
     merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
@@ -733,6 +742,7 @@ async def export_safetensors(req: ExportSafetensorsRequest) -> dict:
 @router.post("/export/huggingface")
 async def export_huggingface(req: ExportHuggingFaceRequest) -> dict:
     """Push a model to HuggingFace Hub."""
+    require_pro_pack("training")
     from training.export import merge_adapter, push_to_huggingface
 
     merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"

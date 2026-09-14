@@ -21,6 +21,11 @@ import psutil
 from .schemas import HardwareInfo
 
 
+def _is_apple_silicon_gpu(name: str | None) -> bool:
+    lowered = (name or "").lower()
+    return "apple" in lowered or platform.machine().lower() in ("arm64", "aarch64")
+
+
 def _detect_gpu() -> tuple[str | None, int | None]:
     """Detect GPU name and VRAM bytes. Returns (name, vram_bytes) or (None, None)."""
     system = platform.system()
@@ -38,12 +43,21 @@ def _detect_gpu() -> tuple[str | None, int | None]:
                 displays = data.get("SPDisplaysDataType", [])
                 for gpu in displays:
                     name = gpu.get("sppci_model", "Unknown GPU")
-                    # Apple Silicon reports unified memory
                     vram_str = gpu.get("spdisplays_vram", gpu.get("sppci_vram", ""))
                     vram_bytes = _parse_vram_string(vram_str)
+                    if vram_bytes is None and _is_apple_silicon_gpu(name):
+                        # Apple Silicon has no dedicated VRAM field: the GPU
+                        # shares unified memory with the CPU. Metal's
+                        # recommendedMaxWorkingSetSize is ~75% of RAM, which
+                        # is what llama.cpp can actually offload. Without this
+                        # Autopilot treats an M-series Mac as CPU-only and
+                        # predicts "painful" speeds for models that fly.
+                        vram_bytes = int(psutil.virtual_memory().total * 0.75)
                     return name, vram_bytes
         except Exception:
             pass
+        if platform.machine().lower() in ("arm64", "aarch64"):
+            return "Apple Silicon GPU", int(psutil.virtual_memory().total * 0.75)
 
     elif system == "Windows":
         try:

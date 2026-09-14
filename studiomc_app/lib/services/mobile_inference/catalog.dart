@@ -14,6 +14,9 @@ class MobileModelSpec {
   final String filenameHint;
   final String? desktopCatalogId;
 
+  /// Mirrors `chat_template_kwargs` on the desktop registry entry.
+  final Map<String, Object?> chatTemplateKwargs;
+
   const MobileModelSpec({
     required this.id,
     required this.displayName,
@@ -22,32 +25,30 @@ class MobileModelSpec {
     required this.minRamBytes,
     required this.filenameHint,
     this.desktopCatalogId,
+    this.chatTemplateKwargs = const {},
   });
 }
 
 /// Phone (0.6B-1B), tablet (4B), laptop (7B+) policy.
 ///
-/// StudioMC IDs live here so mobile does not depend on the Python registry.
-/// Desktop catalog IDs are aliased where they already exist.
+/// Every id here is also a desktop catalog id
+/// (services/model_manager/registry.py, `CURATED_MODELS`), so a model
+/// downloaded on one tier is recognised on every other. Studiomc ids are
+/// cross-checked by services/tests/test_studiomc_model.py.
 class MobileModelCatalog {
   static const int _gb = 1024 * 1024 * 1024;
 
   static const studiomc06b = MobileModelSpec(
     id: 'studiomc-0.6b',
-    displayName: 'StudioMC 0.6B',
+    displayName: 'Studiomc 0.6B',
     paramsBillion: 0.6,
     minClass: DeviceClass.phone,
     minRamBytes: 3 * _gb,
     filenameHint: 'studiomc-0.6b-q4_k_m.gguf',
-  );
-
-  static const studiomc1b = MobileModelSpec(
-    id: 'studiomc-1b',
-    displayName: 'StudioMC 1B',
-    paramsBillion: 1.0,
-    minClass: DeviceClass.phone,
-    minRamBytes: 4 * _gb,
-    filenameHint: 'studiomc-1b-q4_k_m.gguf',
+    desktopCatalogId: 'studiomc-0.6b',
+    // Qwen3-0.6B is a hybrid thinking model; without this it opens every
+    // answer with a <think> block the phone UI has no place to show.
+    chatTemplateKwargs: {'enable_thinking': false},
   );
 
   static const desktop1b = MobileModelSpec(
@@ -62,11 +63,12 @@ class MobileModelCatalog {
 
   static const studiomc4b = MobileModelSpec(
     id: 'studiomc-4b',
-    displayName: 'StudioMC 4B',
+    displayName: 'Studiomc 4B',
     paramsBillion: 4.0,
     minClass: DeviceClass.tablet,
     minRamBytes: 6 * _gb,
     filenameHint: 'studiomc-4b-q4_k_m.gguf',
+    desktopCatalogId: 'studiomc-4b',
   );
 
   static const desktop3b = MobileModelSpec(
@@ -111,7 +113,6 @@ class MobileModelCatalog {
 
   static const all = <MobileModelSpec>[
     studiomc06b,
-    studiomc1b,
     desktop1b,
     studiomc4b,
     desktop3b,
@@ -125,6 +126,37 @@ class MobileModelCatalog {
   };
 
   static MobileModelSpec? byId(String id) => _byId[id];
+
+  /// Match a downloaded GGUF back to a spec by its file name (case
+  /// insensitive). The models screen stores files under the catalog's
+  /// [MobileModelSpec.filenameHint], so this is how a bare filename from
+  /// `MobileInferenceService` regains its catalog identity.
+  static MobileModelSpec? byFilename(String pathOrFilename) {
+    final name = p.basename(pathOrFilename).toLowerCase();
+    for (final spec in all) {
+      if (spec.filenameHint.toLowerCase() == name) return spec;
+    }
+    return null;
+  }
+
+  /// Chat template kwargs a model needs, resolved from its id, then its
+  /// file name, then the GGUF family. Every Qwen3 build except the
+  /// `-2507` instruct releases is a hybrid thinking model, so an
+  /// unlisted Qwen3 GGUF still gets `enable_thinking: false`.
+  static Map<String, Object?> chatTemplateKwargsFor({
+    String? modelId,
+    String? modelPath,
+  }) {
+    final spec = (modelId == null ? null : byId(modelId)) ??
+        (modelId == null ? null : byFilename(modelId)) ??
+        (modelPath == null ? null : byFilename(modelPath));
+    if (spec != null) return spec.chatTemplateKwargs;
+    final name = p.basename(modelPath ?? modelId ?? '').toLowerCase();
+    if (name.contains('qwen3') && !name.contains('2507')) {
+      return const {'enable_thinking': false};
+    }
+    return const {};
+  }
 
   static String modelPath({
     required String appSupportDir,
@@ -153,7 +185,7 @@ class MobileModelCatalog {
     }
     switch (hw.deviceClass) {
       case DeviceClass.phone:
-        return _prefer(available, const ['studiomc-0.6b', 'studiomc-1b']);
+        return _prefer(available, const ['studiomc-0.6b', 'llama-3.2-1b-q4km']);
       case DeviceClass.tablet:
         return _prefer(available, const ['studiomc-4b', 'llama-3.2-3b-q4km']);
       case DeviceClass.laptop:

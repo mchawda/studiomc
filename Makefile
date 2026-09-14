@@ -17,6 +17,7 @@
         build-ios build-android \
         test-mobile-inference mobile-inference \
         release-macos release-linux \
+        smoke-fresh-install smoke-bundle test-services \
         clean clean-services clean-flutter clean-llama clean-pro-pack \
         check-deps eval
 
@@ -46,6 +47,11 @@ help:
 	@echo "Release:"
 	@echo "  make release-macos    Build + create .dmg installer"
 	@echo "  make release-linux    Build + create .AppImage"
+	@echo ""
+	@echo "Verification:"
+	@echo "  make test-services         Python unit tests (Core/Pro boundary, spec, health)"
+	@echo "  make smoke-bundle          Launch services/dist bundle with a clean data dir, assert /health"
+	@echo "  make smoke-fresh-install   Same against the built .app (GGUF=path/to/small.gguf for a real chat)"
 	@echo ""
 	@echo "Evaluation:"
 	@echo "  make eval             Run grounded-answering eval tests + offline scorer"
@@ -137,6 +143,39 @@ mobile-inference:
 	@echo "  iOS/Android probe is live. load/complete still return llama_cpp_not_linked."
 	@echo "  Next:     ship GGUF + implement load/complete in MobileInferenceHost via llama.cpp"
 
+# ── Verification ─────────────────────────────────────────────────────────
+# The frozen bundle is what users run; the dev venv is not. These targets
+# launch the real artefact with an empty STUDIOMC_HOME and assert the
+# first-launch path (supervisor /health, every child healthy, llama-server
+# found, hardware scan + recommendation, clean shutdown, no stale pids).
+#
+#   make smoke-fresh-install                         # built .app
+#   make smoke-fresh-install GGUF=~/models/tiny.gguf  # + real chat completion
+#   make smoke-fresh-install DOWNLOAD=bartowski/Llama-3.2-1B-Instruct-GGUF
+
+SMOKE_ARGS :=
+ifdef GGUF
+SMOKE_ARGS += --gguf "$(GGUF)"
+endif
+ifdef DOWNLOAD
+SMOKE_ARGS += --download "$(DOWNLOAD)"
+endif
+
+test-services:
+	cd services && . .venv/bin/activate && PYTHONPATH=. python -m pytest -q
+
+smoke-bundle:
+	python3 scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services $(SMOKE_ARGS)
+
+smoke-fresh-install:
+	@APP="$$(ls -d studiomc_app/build/macos/Build/Products/Release/*.app 2>/dev/null | head -1)"; \
+	if [ -z "$$APP" ]; then \
+		APP="studiomc_app/build/linux/x64/release/bundle"; \
+	fi; \
+	if [ ! -e "$$APP" ]; then echo "✗ No built app found. Run: make build-macos (or make build-linux)"; exit 1; fi; \
+	echo "Smoke-testing fresh install of $$APP"; \
+	python3 scripts/build/smoke_bundle.py --app "$$APP" $(SMOKE_ARGS)
+
 # ── Release ──────────────────────────────────────────────────────────────
 
 release-macos: build-macos
@@ -169,11 +208,15 @@ clean-pro-pack:
 	@rm -rf dist/pro-pack/
 
 # ── Grounded-answering eval (no GPU, no torch) ──────────────────────────
+# Uses services/.venv when present, else whatever python3 is on PATH, so
+# a clean checkout can run `make eval` right after `pip install -e services[dev]`.
+
+SERVICES_PY := $(shell if [ -x services/.venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 
 eval:
-	@echo "Running grounded-answering eval harness…"
-	cd services && . .venv/bin/activate && PYTHONPATH=. python -m pytest tests/test_eval_harness.py -q
-	cd services && . .venv/bin/activate && PYTHONPATH=. python -m eval
+	@echo "Running grounded-answering eval harness… (python: $(SERVICES_PY))"
+	cd services && PYTHONPATH=. $(SERVICES_PY) -m pytest tests/test_eval_harness.py -q
+	cd services && PYTHONPATH=. $(SERVICES_PY) -m eval
 
 # ── Dependency check ─────────────────────────────────────────────────────
 

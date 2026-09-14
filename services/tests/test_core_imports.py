@@ -15,7 +15,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -36,7 +36,7 @@ PRO_ONLY_MODULES: set[str] = {
 
 
 @pytest.fixture
-def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     """Replace ``__import__`` with a guard that records & blocks Pro modules.
 
     Returns the list of Pro module names something *attempted* to import.
@@ -56,12 +56,31 @@ def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return original(name, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(builtins, "__import__", guarded)
-    # Drop any cached imports from previous tests so the guard runs.
+    # Drop any cached imports from previous tests so the guard runs, but
+    # restore them afterwards: other test modules hold references to the
+    # original module objects (and their singletons such as SQLite stores),
+    # and leaving fresh duplicates in ``sys.modules`` makes those tests
+    # order-dependent.
+    evicted: dict[str, object] = {}
     for mod in list(sys.modules):
         root = mod.split(".", 1)[0]
-        if root in PRO_ONLY_MODULES or mod.startswith("inference"):
+        if root in PRO_ONLY_MODULES or root in SERVICE_PACKAGES:
+            evicted[mod] = sys.modules.pop(mod)
+    yield attempted
+    for mod in list(sys.modules):
+        root = mod.split(".", 1)[0]
+        if root in PRO_ONLY_MODULES or root in SERVICE_PACKAGES:
             sys.modules.pop(mod, None)
-    return attempted
+    sys.modules.update(evicted)
+
+
+# First-party packages whose cached imports must be evicted so the guard
+# actually observes their module-level imports.
+SERVICE_PACKAGES: set[str] = {
+    "inference", "clara", "common", "documents", "model_manager", "lre",
+    "orchestrator", "data_recipes", "mcp", "memory", "supervisor", "eval",
+    "training",
+}
 
 
 CORE_MODULES: list[str] = [
@@ -82,11 +101,60 @@ CORE_MODULES: list[str] = [
     "inference.backends.studiomc",
     "inference.router",                      # constructs without torch
     "common.pro_pack",
+    "common.build_info",
     "clara.compressor",                      # 3-tier embed (sbert → llama → tfidf)
     "eval",                                  # grounded-eval scorer (no torch)
     "eval.scorer",
     "eval.metrics",
     "eval.retrieval",
+    # ── Service entry points ────────────────────────────────────────────
+    # These are what ``bundle_entry.py --service <name>`` imports inside the
+    # frozen bundle. v0.9.9.x shipped with ``inference.app`` importing torch
+    # at module load; the child died on startup and the supervisor restarted
+    # it until "FAILED". Every managed service must import Pro-free.
+    "inference.app",
+    "model_manager.app",
+    "model_manager.downloader",              # HF downloads must not need huggingface_hub
+    "documents.app",
+    "clara.app",
+    "lre.app",
+    "orchestrator.app",
+    "data_recipes.app",
+    "mcp.app",
+    "memory.app",
+    "supervisor.app",
+    "supervisor.routes",
+    "eval.runner",                           # CLI entry (python -m eval)
+    "eval.generator",
+    "eval.fixtures",
+    # Studiomc 4B pipeline: public surface + CLI stay torch/unsloth-free.
+    # Only unsloth_trainer.train()/export_gguf() touch the Pro stack.
+    "training.studiomc_model",
+    "training.studiomc_model.cli",
+    "training.studiomc_model.data",
+    "training.studiomc_model.schema",
+    "training.studiomc_model.recipe",
+    "training.studiomc_model.unsloth_trainer",  # graceful: unsloth_available()
+    # Core services the supervisor runs in the bundled interpreter.
+    "mcp",
+    "mcp.broker",
+    "mcp.client",
+    "mcp.routes",
+    "memory",
+    "memory.store",
+    "memory.extractor",
+    "memory.routes",
+    "lre",
+    "lre.tools",
+    "lre.sandbox",
+    "lre.routes",
+    "orchestrator",
+    "orchestrator.planner",
+    "orchestrator.reasoning",
+    "orchestrator.routes",
+    "model_manager.registry",
+    "model_manager.autopilot",
+    "clara.retriever",
 ]
 
 
@@ -96,7 +164,27 @@ def test_core_module_imports_without_pro_pack(
     module_name: str,
 ) -> None:
     """Each Core module must be importable on a Pro-pack-free machine."""
-    importlib.import_module(module_name)
+    # Evict the module (and its children) so the guard sees a real import
+    # even when an earlier test file already loaded it. Restore the
+    # original objects afterwards so other tests keep one module identity
+    # (monkeypatching ``common.pro_pack`` must still reach its importers).
+    evicted: dict[str, object] = {}
+    for cached in list(sys.modules):
+        if cached == module_name or cached.startswith(module_name + "."):
+            evicted[cached] = sys.modules.pop(cached)
+    try:
+        importlib.import_module(module_name)
+    finally:
+        for cached in list(sys.modules):
+            if cached == module_name or cached.startswith(module_name + "."):
+                sys.modules.pop(cached, None)
+        sys.modules.update(evicted)  # type: ignore[arg-type]
+        # Re-point parent package attributes at the restored objects.
+        for name, module in evicted.items():
+            parent_name, _, child = name.rpartition(".")
+            parent = sys.modules.get(parent_name) if parent_name else None
+            if parent is not None:
+                setattr(parent, child, module)
 
 
 def test_inference_engine_constructs_without_torch(

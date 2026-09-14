@@ -5,14 +5,29 @@
 
 The supervisor is the single entry-point that the Flutter desktop app launches.
 It starts, monitors, health-checks, and auto-restarts every other backend service.
+
+Startup ordering matters for the desktop app's first-launch experience:
+
+1. Return from lifespan at once so ``/health`` answers within a second of
+   the process starting; it reports ``ready: false`` until step 3 is done.
+2. Kill stale Studiomc port holders from a previous crash (background).
+3. Spawn the managed services (background); ``ready`` flips to true.
+4. Run the full hardware scan (disk benchmark included) in the background.
+5. Watch the parent process (the Flutter app) and shut everything down
+   when it exits, so no orphaned backend survives a Cmd+Q.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import signal
 import sys
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,34 +53,153 @@ logging.basicConfig(
 )
 logger = logging.getLogger("supervisor")
 
+# The desktop app passes its own PID so we can exit when it does. Absent
+# in development (``python supervisor/app.py`` from a terminal), where the
+# supervisor must outlive whatever shell started it.
+PARENT_PID_ENV = "STUDIOMC_PARENT_PID"
+PARENT_POLL_SECONDS = 2.0
+
 # ── Shared manager instance ──────────────────────────────────────────────
 
 manager = ProcessManager()
 
-# ── Lifespan ─────────────────────────────────────────────────────────────
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: scan hardware + launch all services. Shutdown: stop all."""
-    logger.info("Supervisor starting — cleaning up stale processes…")
-    manager.kill_stale_port_holders()
+def _spawn(coro: Coroutine[Any, Any, None]) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
-    logger.info("Scanning hardware…")
+
+def _parent_pid() -> int | None:
+    raw = os.environ.get(PARENT_PID_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        logger.warning("Ignoring non-numeric %s=%r", PARENT_PID_ENV, raw)
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        # Fallback without psutil (POSIX only): signal 0 probes existence.
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+
+def request_self_shutdown(reason: str) -> None:
+    """Ask uvicorn to exit cleanly (runs the lifespan shutdown hook)."""
+    logger.warning("Supervisor exiting: %s", reason)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+async def _background_hardware_scan() -> None:
+    logger.info("Scanning hardware in background…")
     try:
         hw = await manager.scan_hardware(quick=False)
         logger.info("Hardware: %s (%s, VRAM %s)", hw.cpu_name, hw.gpu_name, hw.vram_bytes)
     except Exception:
         logger.exception("Hardware scan failed (non-fatal)")
 
-    logger.info("Starting managed services…")
-    statuses = await manager.start_all()
-    for st in statuses:
-        logger.info("  %s → %s (pid=%s)", st.name, st.status, st.pid)
+
+async def _watch_parent(parent_pid: int) -> None:
+    logger.info("Watching parent process pid=%d", parent_pid)
+    try:
+        while True:
+            await asyncio.sleep(PARENT_POLL_SECONDS)
+            if not _pid_alive(parent_pid):
+                request_self_shutdown(f"parent process {parent_pid} is gone")
+                return
+    except asyncio.CancelledError:
+        return
+
+
+async def _watch_own_executable() -> None:
+    """Exit if our bundle was deleted or replaced by an app upgrade.
+
+    ``sys.executable`` is what the manager uses to spawn child services.
+    Once it is gone every restart fails with ``FileNotFoundError`` and the
+    app is left talking to a zombie backend. Exiting lets the (new) app
+    launch the (new) supervisor.
+    """
+    exe = Path(sys.executable)
+    if getattr(sys, "_MEIPASS", None) is None:
+        return  # development interpreter, nothing to watch
+    try:
+        while True:
+            await asyncio.sleep(5.0)
+            if not exe.exists():
+                request_self_shutdown(f"bundle executable vanished: {exe}")
+                return
+    except asyncio.CancelledError:
+        return
+
+
+# ── Lifespan ─────────────────────────────────────────────────────────────
+
+
+async def _background_startup() -> None:
+    """Everything the old lifespan did before yielding, now after it.
+
+    Uvicorn does not accept connections until lifespan startup returns, so
+    anything awaited here before ``yield`` pushes out the first ``/health``.
+    On a fresh Mac that was the disk benchmark plus nine Gatekeeper-scanned
+    first execs, which is why 45s and 60s budgets kept timing out. Clients
+    read ``ready`` from ``/health`` to know when the children exist.
+    """
+    try:
+        manager.set_startup_phase("cleaning_ports")
+        await asyncio.to_thread(manager.kill_stale_port_holders)
+
+        manager.set_startup_phase("launching_services")
+        logger.info("Starting managed services…")
+        statuses = await manager.start_all()
+        for st in statuses:
+            logger.info("  %s → %s (pid=%s)", st.name, st.status, st.pid)
+        manager.set_startup_phase("ready", ready=True)
+        logger.info("Supervisor ready after %.1fs", manager.startup.to_dict()["uptime_s"])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Supervisor startup failed")
+        manager.set_startup_phase("failed", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    await _background_hardware_scan()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: serve /health at once, boot everything else in the background."""
+    logger.info("Supervisor starting (pid=%d)", os.getpid())
+    _spawn(_background_startup())
+    _spawn(_watch_own_executable())
+    parent = _parent_pid()
+    if parent is not None:
+        _spawn(_watch_parent(parent))
 
     yield  # ← app is running
 
     logger.info("Supervisor shutting down — stopping all services…")
+    for task in list(_background_tasks):
+        task.cancel()
+    # Let a cancelled startup release its per-service locks before stop_all
+    # takes them, otherwise a child spawned mid-cancel could be missed.
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
     await manager.stop_all()
     logger.info("All services stopped. Goodbye.")
 

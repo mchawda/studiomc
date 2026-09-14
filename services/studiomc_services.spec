@@ -19,8 +19,13 @@ Core vs Pro split (see ``services/SPLIT_BUNDLE.md``):
     * The training service registers its routes lazily and any code path
       that needs the heavy ML stack raises ``ProPackRequiredError``,
       which is converted to HTTP 412 by ``common/fastapi_pro_pack.py``.
-    * Heavy libs are listed in the ``excludes`` block below so PyInstaller
-      will fail loud if a Core import accidentally references them.
+    * Heavy libs are listed in the ``excludes`` block below so they can
+      never leak into the Core bundle. NOTE: PyInstaller does NOT fail the
+      build when an excluded module is imported; the import simply fails
+      at runtime inside the frozen bundle. That is exactly how the
+      v0.9.9.x releases shipped with a dead inference service. The real
+      guard is ``scripts/build/smoke_bundle.py``, which launches every
+      service from the built bundle and asserts ``/health``.
 """
 
 import platform
@@ -94,6 +99,7 @@ hidden_imports = [
     "supervisor.manager",
     # Common utilities
     "common.config",
+    "common.build_info",
     "common.hardware",
     "common.schemas",
     "common.database",
@@ -102,9 +108,6 @@ hidden_imports = [
     "common.fastapi_pro_pack",
     # Standard libraries that sometimes need nudging
     "numpy",
-    "tiktoken",
-    "tiktoken_ext",
-    "tiktoken_ext.openai_public",
     "aiosqlite",
     "httpx",
     "platformdirs",
@@ -137,11 +140,22 @@ datas = [
     ("common", "common"),
 ]
 
-# The llama-server sidecar binary lives next to the frozen executable
-# (Contents/Resources/bin/llama-server in the macOS .app). Ship it as
-# data so the bundle is self-contained.
-if (SERVICES_ROOT / "bin").is_dir():
-    datas.append(("bin", "bin"))
+# The llama-server sidecar binary (services/bin, populated by
+# scripts/build/fetch_llama_server.sh). PyInstaller >= 6 places data under
+# ``_internal/``, so at runtime it lives at ``sys._MEIPASS / "bin"``; see
+# ``inference/llama_server_sidecar.py`` for the discovery order. Without
+# it the Core bundle has no built-in inference engine, so fail the build.
+if not (SERVICES_ROOT / "bin").is_dir():
+    raise SystemExit(
+        "services/bin/ is missing: run scripts/build/fetch_llama_server.sh "
+        "before building the bundle."
+    )
+datas.append(("bin", "bin"))
+
+# Build identity written by scripts/build/build_services.sh; reported by
+# the supervisor's /health so the app can detect stale supervisors.
+if (SERVICES_ROOT / "BUILD_INFO.json").is_file():
+    datas.append(("BUILD_INFO.json", "."))
 
 # ── Analysis ───────────────────────────────────────────────────────────────
 a = Analysis(

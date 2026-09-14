@@ -40,6 +40,75 @@ class ScoredChunk {
   const ScoredChunk({required this.chunk, required this.score});
 }
 
+/// One citation in the shape the desktop `Citation` schema uses
+/// (`document_id`, `chunk_index`, `snippet`, `relevance_score`) so a
+/// mobile answer can be scored by `services/eval` unchanged.
+class RagCitation {
+  final int sourceNumber;
+  final String documentId;
+  final int chunkIndex;
+  final String snippet;
+  final double relevanceScore;
+
+  const RagCitation({
+    required this.sourceNumber,
+    required this.documentId,
+    required this.chunkIndex,
+    required this.snippet,
+    required this.relevanceScore,
+  });
+
+  factory RagCitation.fromHit(int sourceNumber, ScoredChunk hit) {
+    final text = hit.chunk.text;
+    return RagCitation(
+      sourceNumber: sourceNumber,
+      documentId: hit.chunk.documentId,
+      chunkIndex: hit.chunk.index,
+      snippet: text.length > 300 ? text.substring(0, 300) : text,
+      relevanceScore: hit.score,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'source_number': sourceNumber,
+        'document_id': documentId,
+        'chunk_index': chunkIndex,
+        'snippet': snippet,
+        'relevance_score': relevanceScore,
+      };
+}
+
+/// Result of retrieve-then-generate: the numbered sources that went into
+/// the prompt plus the token stream. Consumers resolve `[Source N]`
+/// markers in the answer against [citations] by `sourceNumber`.
+class CitedGeneration {
+  final List<RagCitation> citations;
+  final Stream<String> tokens;
+
+  const CitedGeneration({required this.citations, required this.tokens});
+
+  /// Citations actually referenced by `[Source N]` in [answer], in order
+  /// of first appearance. Unknown N is dropped, matching CLaRa.
+  List<RagCitation> citedIn(String answer) {
+    final seen = <int>{};
+    final out = <RagCitation>[];
+    for (final m in sourceMarkerPattern.allMatches(answer)) {
+      final n = int.parse(m.group(1)!);
+      if (!seen.add(n)) continue;
+      for (final c in citations) {
+        if (c.sourceNumber == n) {
+          out.add(c);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  static final sourceMarkerPattern =
+      RegExp(r'\[Source\s+(\d+)\]', caseSensitive: false);
+}
+
 abstract class ChunkStore {
   Future<void> upsert(TextChunk chunk);
 
@@ -215,23 +284,80 @@ class OnDeviceRag {
     return scored.sublist(0, topK);
   }
 
+  /// Build the grounded prompt in the same shape as `clara.retriever`:
+  /// numbered `[Source N | doc=… chunk=…]` blocks, cite-as-`[Source N]`
+  /// instruction, and an explicit refusal rule.
+  static String buildGroundedPrompt({
+    required String query,
+    required List<ScoredChunk> hits,
+    List<ChatTurn> messages = const [],
+  }) {
+    final buf = StringBuffer();
+    buf.writeln(
+      'Answer using ONLY the sources below. Cite each claim inline as '
+      '[Source N]. If the sources do not contain the answer, say you '
+      'cannot answer from the given sources.',
+    );
+    buf.writeln();
+    buf.writeln('### Sources');
+    if (hits.isEmpty) {
+      buf.writeln('(no sources retrieved)');
+    }
+    for (var i = 0; i < hits.length; i++) {
+      final c = hits[i].chunk;
+      buf.writeln('[Source ${i + 1} | doc=${c.documentId} chunk=${c.index}]');
+      buf.writeln(c.text);
+      buf.writeln();
+    }
+    if (messages.isNotEmpty) {
+      buf.writeln('### Conversation');
+      for (final turn in messages) {
+        buf.writeln('${turn.role}: ${turn.content}');
+      }
+      buf.writeln();
+    }
+    buf.writeln('### Question');
+    buf.writeln(query);
+    buf.writeln();
+    buf.write('### Answer');
+    return buf.toString();
+  }
+
+  /// Retrieve, then stream a cited answer. The returned [CitedGeneration]
+  /// carries the numbered sources so the UI can render `[Source N]` links
+  /// and the eval harness can score precision/recall.
+  Future<CitedGeneration> retrieveThenGenerateCited({
+    required String query,
+    List<ChatTurn> messages = const [],
+    int topK = 4,
+  }) async {
+    final hits = await retrieve(query, topK: topK);
+    final citations = <RagCitation>[
+      for (var i = 0; i < hits.length; i++) RagCitation.fromHit(i + 1, hits[i]),
+    ];
+    final prompt = buildGroundedPrompt(
+      query: query,
+      hits: hits,
+      messages: messages,
+    );
+    return CitedGeneration(
+      citations: citations,
+      tokens: engine.streamTokens(CompletionRequest(prompt: prompt)),
+    );
+  }
+
+  /// Token stream only. Prefer [retrieveThenGenerateCited] when the
+  /// caller needs to show or score citations.
   Stream<String> retrieveThenGenerate({
     required String query,
     List<ChatTurn> messages = const [],
     int topK = 4,
   }) async* {
-    final hits = await retrieve(query, topK: topK);
-    final context = hits.map((h) => h.chunk.text).join('\n\n');
-    final prompt = StringBuffer()
-      ..writeln('Use the following context to answer the question.')
-      ..writeln()
-      ..writeln(context)
-      ..writeln()
-      ..writeln('Question: $query');
-    if (messages.isNotEmpty) {
-      prompt.writeln();
-      prompt.writeln(CompletionRequest(messages: messages).resolvedPrompt);
-    }
-    yield* engine.streamTokens(CompletionRequest(prompt: prompt.toString()));
+    final generation = await retrieveThenGenerateCited(
+      query: query,
+      messages: messages,
+      topK: topK,
+    );
+    yield* generation.tokens;
   }
 }

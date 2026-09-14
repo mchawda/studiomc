@@ -25,13 +25,13 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from common.config import ALL_PORTS, LOGS_DIR, SERVICE_HOST, ensure_dirs, service_url
+from common.config import ALL_BACKEND_PORTS, ALL_PORTS, LOGS_DIR, SERVICE_HOST, ensure_dirs, service_url
 from common.hardware import scan_hardware
 from common.pro_pack import ProPackRequiredError
 from common.pro_pack import get_status as pro_pack_status
@@ -131,6 +131,34 @@ class ManagedProcess:
         )
 
 
+@dataclass
+class StartupState:
+    """Where the supervisor is in its own boot sequence.
+
+    ``/health`` answers as soon as uvicorn is serving, which is before any
+    child has been spawned; clients that need the children (the desktop
+    app, the smoke test) read ``ready`` instead of assuming a 200 means
+    the backend is up.
+    """
+
+    phase: str = "starting"  # starting | cleaning_ports | launching_services | ready | failed
+    ready: bool = False
+    error: str | None = None
+    started_at: float = field(default_factory=time.time)
+    ready_at: float | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ready": self.ready,
+            "phase": self.phase,
+            "startup_error": self.error,
+            "uptime_s": round(time.time() - self.started_at, 1),
+            "ready_after_s": (
+                round(self.ready_at - self.started_at, 1) if self.ready_at else None
+            ),
+        }
+
+
 # ── Manager ──────────────────────────────────────────────────────────────
 
 
@@ -147,6 +175,7 @@ class ProcessManager:
         self._health_task: asyncio.Task[None] | None = None
         self._hw_info: HardwareInfo | None = None
         self._shutting_down = False
+        self._startup = StartupState()
 
         for name, rel_path in MANAGED_SERVICES.items():
             port = ALL_PORTS.get(name, 0)
@@ -157,48 +186,137 @@ class ProcessManager:
             )
             self._service_locks[name] = asyncio.Lock()
 
+    # ── Startup state ────────────────────────────────────────────────
+
+    @property
+    def startup(self) -> StartupState:
+        return self._startup
+
+    def set_startup_phase(self, phase: str, *, ready: bool = False, error: str | None = None) -> None:
+        self._startup.phase = phase
+        self._startup.ready = ready
+        self._startup.error = error
+        if ready:
+            self._startup.ready_at = time.time()
+
     # ── Stale process cleanup ────────────────────────────────────────
 
     def kill_stale_port_holders(self) -> None:
-        """Kill any leftover processes holding our ports from a previous run.
+        """Kill leftover Studiomc processes holding our ports from a previous run.
 
         When the app is quit abruptly, child services (started with setsid)
-        can survive and hold ports. This prevents the next launch from binding.
+        can survive and hold ports, and the next launch cannot bind. Only
+        processes that are recognisably ours are killed: an unrelated app
+        that happens to sit on one of our ports is reported, not shot,
+        and the affected service fails to bind with a clear error instead.
         """
-        all_ports = list(ALL_PORTS.values())
-        for port in all_ports:
+        for port in ALL_BACKEND_PORTS:
             if not self._port_in_use(port):
                 continue
-            logger.warning("Port %d already in use — killing stale holder", port)
-            self._kill_port_holder(port)
+            holders = self._port_holders(port)
+            if not holders:
+                logger.warning(
+                    "Port %d is in use but no holder could be identified; "
+                    "the service on it will fail to bind", port,
+                )
+                continue
+            for pid, cmdline in holders:
+                if pid == os.getpid():
+                    continue
+                if not self._is_studiomc_process(cmdline):
+                    logger.error(
+                        "Port %d is held by a non-Studiomc process pid=%d (%s); "
+                        "not killing it, the service on that port will fail to bind",
+                        port, pid, cmdline[:120],
+                    )
+                    continue
+                logger.warning("Port %d held by stale Studiomc process pid=%d; killing it", port, pid)
+                self._kill_pid(pid)
 
     @staticmethod
     def _port_in_use(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex((SERVICE_HOST, port)) == 0
 
+    # Anything the supervisor, bundle_entry or the sidecar could have been
+    # started as. Dev checkouts run ``python <repo>/services/<svc>/app.py``
+    # so the services directory itself is a marker too.
+    _OWN_CMDLINE_MARKERS: tuple[str, ...] = (
+        "studiomc_services",
+        "bundle_entry",
+        "llama-server",
+        str(SERVICES_DIR).lower(),
+    )
+
+    @classmethod
+    def _is_studiomc_process(cls, cmdline: str) -> bool:
+        lowered = cmdline.lower()
+        return any(marker in lowered for marker in cls._OWN_CMDLINE_MARKERS)
+
     @staticmethod
-    def _kill_port_holder(port: int) -> None:
-        """Find and kill the process listening on a given port."""
-        if sys.platform == "win32":
-            return
+    def _port_holders(port: int) -> list[tuple[int, str]]:
+        """Return ``(pid, cmdline)`` for every listener on ``port``.
+
+        psutil's per-process connection listing works without privileges
+        for processes we own on every platform (system-wide
+        ``net_connections`` needs root on macOS). ``lsof`` is the fallback
+        where psutil cannot see the holder.
+        """
+        holders: dict[int, str] = {}
         try:
-            result = subprocess.run(
-                ["lsof", "-ti", f":{port}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            pids = result.stdout.strip().split()
-            for pid_str in pids:
+            import psutil
+
+            for proc in psutil.process_iter(["pid", "cmdline"]):
                 try:
-                    pid = int(pid_str)
-                    if pid == os.getpid():
-                        continue
-                    os.kill(pid, signal.SIGKILL)
-                    logger.info("Killed stale process %d on port %d", pid, port)
-                except (ValueError, ProcessLookupError, PermissionError):
-                    pass
+                    conns = proc.net_connections(kind="tcp")
+                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except Exception:
+                    continue
+                for conn in conns:
+                    if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port:
+                        holders[proc.pid] = " ".join(proc.info.get("cmdline") or []) or proc.name()
+                        break
         except Exception as exc:
-            logger.warning("Could not clean port %d: %s", port, exc)
+            logger.debug("psutil port scan failed for %d: %s", port, exc)
+
+        if not holders and sys.platform != "win32":
+            try:
+                result = subprocess.run(
+                    ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for pid_str in result.stdout.split():
+                    if not pid_str.isdigit():
+                        continue
+                    pid = int(pid_str)
+                    cmd = subprocess.run(
+                        ["ps", "-o", "command=", "-p", str(pid)],
+                        capture_output=True, text=True, timeout=5,
+                    ).stdout.strip()
+                    holders[pid] = cmd
+            except Exception as exc:
+                logger.debug("lsof port scan failed for %d: %s", port, exc)
+        return sorted(holders.items())
+
+    @staticmethod
+    def _kill_pid(pid: int) -> None:
+        try:
+            import psutil
+
+            proc = psutil.Process(pid)
+            proc.kill()
+            proc.wait(timeout=3)
+            logger.info("Killed stale process %d", pid)
+            return
+        except Exception:
+            pass
+        if sys.platform != "win32":
+            try:
+                os.kill(pid, signal.SIGKILL)
+                logger.info("Killed stale process %d", pid)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -227,9 +345,17 @@ class ProcessManager:
                 # Report current status without launching.
                 results.append(self._get(name).to_status())
                 continue
+            if self._shutting_down:
+                # /shutdown arrived while we were still booting (startup
+                # runs in the background now); do not spawn what stop_all
+                # has already passed in its reverse sweep.
+                logger.info("Shutdown requested during startup; not launching %s", name)
+                results.append(self._get(name).to_status())
+                continue
             st = await self.start_service(name)
             results.append(st)
-        self._ensure_health_loop()
+        if not self._shutting_down:
+            self._ensure_health_loop()
         return results
 
     async def stop_all(self) -> list[ServiceStatus]:
@@ -271,12 +397,33 @@ class ProcessManager:
         svc.status = "starting"
         svc.error = None
 
+        # An app upgrade replaces the .app while an old supervisor may
+        # still be running. Its ``sys.executable`` is now gone and every
+        # spawn would raise FileNotFoundError. Fail fast with a message
+        # that says what happened, and ask the supervisor to exit so the
+        # new app can launch the matching backend.
+        if IS_BUNDLED and not Path(sys.executable).exists():
+            svc.status = "failed"
+            svc.error = (
+                f"Bundle executable no longer exists: {sys.executable} "
+                "(app was upgraded or removed). Supervisor will exit."
+            )
+            logger.error("%s: %s", svc.name, svc.error)
+            self._request_supervisor_exit()
+            return svc.to_status()
+
         try:
             log_path = LOGS_DIR / f"{svc.name}.log"
             log_file = open(log_path, "a")
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            # Children run in their own session (setsid below) so a signal
+            # to the supervisor's group does not tear them down mid-request.
+            # The flip side: if the supervisor is SIGKILLed they would live
+            # forever and hold the ports. bundle_entry watches this pid and
+            # exits when it disappears.
+            env["STUDIOMC_SUPERVISOR_PID"] = str(os.getpid())
             # Pro-pack-routed services (training) are launched with a
             # *separate* Python interpreter living in ``~/.studiomc/pro-env/``.
             # That interpreter doesn't know about the bundled service
@@ -542,6 +689,18 @@ class ProcessManager:
         if svc is None:
             raise ValueError(f"Unknown service: {name}")
         return svc
+
+    _exit_requested = False
+
+    def _request_supervisor_exit(self) -> None:
+        """Signal our own process once; uvicorn runs the lifespan shutdown."""
+        if self._exit_requested or self._shutting_down:
+            return
+        self._exit_requested = True
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except OSError:
+            logger.exception("Could not signal supervisor to exit")
 
     async def _terminate(self, svc: ManagedProcess) -> None:
         """Send SIGTERM, wait, then SIGKILL if needed."""

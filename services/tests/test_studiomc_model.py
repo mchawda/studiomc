@@ -78,6 +78,74 @@ def test_registry_lists_studiomc_4b() -> None:
     assert "citations" in card["specialization"]
 
 
+def test_registry_studiomc_entries_carry_provenance_and_hardware_floor() -> None:
+    """HF repo/file/size/sha, license, and RAM/VRAM floors are all present."""
+    from model_manager.registry import STUDIOMC_06B_ID, STUDIOMC_IDS
+    from training.studiomc_model.recipe import (
+        CATALOG_GGUF_FILE,
+        CATALOG_GGUF_REPO,
+        SPECIALIZED_DISK_BYTES,
+        SPECIALIZED_LICENSE,
+        SPECIALIZED_SHA256,
+    )
+
+    assert STUDIOMC_IDS == {STUDIOMC_4B_ID, STUDIOMC_06B_ID}
+    for model_id in STUDIOMC_IDS:
+        model = CURATED_BY_ID[model_id]
+        card = json.loads(model.manifest_json or "{}")
+        assert model.checksum and len(model.checksum) == 64, model_id
+        assert card["sha256"] == model.checksum
+        assert card["license"] == SPECIALIZED_LICENSE
+        assert card["gguf_file"].endswith(".gguf")
+        assert card["min_ram_bytes"] > 0
+        assert "min_vram_bytes" in card
+        assert isinstance(card["thinking"], bool)
+        assert model.arch == "qwen3"
+
+    four_b = CURATED_BY_ID[STUDIOMC_4B_ID]
+    card = json.loads(four_b.manifest_json or "{}")
+    assert four_b.source_ref == CATALOG_GGUF_REPO
+    assert card["gguf_file"] == CATALOG_GGUF_FILE
+    assert four_b.disk_bytes == SPECIALIZED_DISK_BYTES
+    assert four_b.checksum == SPECIALIZED_SHA256
+    assert card["min_ram_bytes"] == 8 * 1024**3
+
+    small = CURATED_BY_ID[STUDIOMC_06B_ID]
+    assert small.params_billion == 0.6
+    assert is_studiomc_specialized(small)
+    assert not is_desktop_default_candidate(small)
+    small_card = json.loads(small.manifest_json or "{}")
+    assert small_card["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_mobile_catalog_studiomc_ids_match_desktop_registry() -> None:
+    """Every Studiomc id the Flutter mobile catalog ships must exist on desktop."""
+    import re
+
+    from model_manager.registry import STUDIOMC_IDS
+
+    catalog = (
+        Path(__file__).resolve().parents[2]
+        / "studiomc_app" / "lib" / "services" / "mobile_inference" / "catalog.dart"
+    )
+    if not catalog.is_file():
+        pytest.skip("Flutter app not checked out next to services/")
+    source = catalog.read_text(encoding="utf-8")
+    mobile_ids = set(re.findall(r"id:\s*'(studiomc-[^']+)'", source))
+    assert mobile_ids == STUDIOMC_IDS
+    # Non-Studiomc aliases must also be real desktop catalog ids.
+    aliases = set(re.findall(r"desktopCatalogId:\s*'([^']+)'", source))
+    assert aliases <= set(CURATED_BY_ID)
+    # The phone engine must disable Qwen3 thinking wherever desktop does.
+    for model_id in STUDIOMC_IDS:
+        manifest = json.loads(CURATED_BY_ID[model_id].manifest_json or "{}")
+        kwargs = manifest.get("chat_template_kwargs", {})
+        block = re.search(rf"id:\s*'{re.escape(model_id)}'.*?\);", source, re.S)
+        assert block is not None, model_id
+        has_no_think = "'enable_thinking': false" in block.group(0)
+        assert has_no_think == (kwargs.get("enable_thinking") is False), model_id
+
+
 def test_seed_fixtures_cover_task_mix() -> None:
     cases = load_seed_cases()
     tasks = {c.task for c in cases}
@@ -274,6 +342,36 @@ def test_autopilot_skips_studiomc_4b_when_ram_too_small() -> None:
     assert STUDIOMC_4B_ID not in overflow
 
 
+def test_autopilot_falls_back_to_generic_pick_below_desktop_ram() -> None:
+    """4 GB RAM, no GPU: the ranked list is still non-empty and not Studiomc 4B."""
+    result = autopilot.recommend(_desktop_hw(ram_gb=4), user_intent="chat")
+    assert result.recommended
+    top = result.recommended[0]
+    assert top.model_id != STUDIOMC_4B_ID
+    assert top.recommended is True
+
+
+@pytest.mark.parametrize("ram_gb", [2, 4, 8, 16, 64])
+def test_autopilot_never_ranks_phone_tier_on_desktop(ram_gb: int) -> None:
+    from model_manager.registry import STUDIOMC_06B_ID
+
+    result = autopilot.recommend(_desktop_hw(ram_gb=ram_gb), user_intent=None)
+    everything = [r.model_id for r in result.recommended + result.bigger_slower]
+    assert STUDIOMC_06B_ID not in everything
+
+
+def test_autopilot_promotes_studiomc_4b_on_vram_even_with_low_ram() -> None:
+    result = autopilot.recommend(_desktop_hw(ram_gb=4, vram_gb=8), user_intent="chat")
+    assert result.recommended[0].model_id == STUDIOMC_4B_ID
+
+
+def test_autopilot_studiomc_4b_is_recommended_exactly_once() -> None:
+    result = autopilot.recommend(_desktop_hw(ram_gb=16), user_intent="chat")
+    everything = [r.model_id for r in result.recommended + result.bigger_slower]
+    assert everything.count(STUDIOMC_4B_ID) == 1
+    assert len(result.recommended) <= 3
+
+
 def test_autopilot_does_not_force_70b_as_default() -> None:
     result = autopilot.recommend(_desktop_hw(ram_gb=16), user_intent=None)
     assert result.recommended
@@ -287,6 +385,56 @@ def test_cli_dry_run_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["rows"] >= 16
     assert payload["catalog_id"] == "studiomc-4b"
     assert payload["unsloth"] in (True, False)
+
+
+def test_cli_train_wires_qat_flag_into_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--qat`` must reach TrainJob.qat and the int8-int4 scheme, no GPU needed."""
+    from training.studiomc_model import unsloth_trainer as ut
+    from training.studiomc_model.recipe import QAT_SCHEME, UNSLOTH_BASE_MODEL_ID
+
+    captured: dict[str, ut.TrainJob] = {}
+
+    def fake_train(job: ut.TrainJob) -> ut.TrainResult:
+        captured["job"] = job
+        return ut.TrainResult(
+            success=True,
+            adapter_dir=str(job.output_dir / "adapter"),
+            num_rows=3,
+            num_steps=job.max_steps,
+            qat_scheme=QAT_SCHEME if job.qat else None,
+        )
+
+    monkeypatch.setattr(ut, "train", fake_train)
+    data = tmp_path / "sft.jsonl"
+    data.write_text("{}\n", encoding="utf-8")
+
+    assert cli_main([
+        "train", "--data", str(data), "--output", str(tmp_path / "out"),
+        "--qat", "--max-steps", "7",
+    ]) == 0
+    job = captured["job"]
+    assert job.qat is True
+    assert job.max_steps == 7
+    assert job.base_model == UNSLOTH_BASE_MODEL_ID
+    assert json.loads(capsys.readouterr().out)["qat_scheme"] == QAT_SCHEME
+
+    assert cli_main(["train", "--data", str(data), "--output", str(tmp_path / "out2")]) == 0
+    assert captured["job"].qat is False
+    assert json.loads(capsys.readouterr().out)["qat_scheme"] is None
+
+
+def test_cli_train_without_unsloth_exits_2_with_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from training.studiomc_model import unsloth_trainer as ut
+
+    monkeypatch.setattr(ut, "unsloth_available", lambda: False)
+    data = tmp_path / "sft.jsonl"
+    data.write_text("{}\n", encoding="utf-8")
+    assert cli_main(["train", "--data", str(data), "--output", str(tmp_path / "out")]) == 2
+    assert "pip install unsloth" in capsys.readouterr().err
 
 
 def test_cli_generate_writes_jsonl(tmp_path: Path) -> None:

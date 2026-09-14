@@ -55,6 +55,11 @@ DATA_RECIPES_PORT = 8107
 MCP_PORT = 8108
 MEMORY_PORT = 8109
 
+# llama-server sidecar spawned by the inference service. Not a managed
+# service, but an orphaned sidecar holds this port exactly like an orphaned
+# child holds its own, so the supervisor's stale-port cleanup covers it.
+LLAMA_SERVER_PORT = int(os.environ.get("STUDIOMC_LLAMA_PORT", "8190"))
+
 ALL_PORTS = {
     "inference": INFERENCE_PORT,
     "model_manager": MODEL_MANAGER_PORT,
@@ -68,6 +73,10 @@ ALL_PORTS = {
     "memory": MEMORY_PORT,
     "supervisor": SUPERVISOR_PORT,
 }
+
+# Every port the backend may hold, including sidecars that are not
+# supervised directly. Used for stale-process cleanup on startup.
+ALL_BACKEND_PORTS: tuple[int, ...] = (*ALL_PORTS.values(), LLAMA_SERVER_PORT)
 
 
 def service_url(port: int, path: str = "") -> str:

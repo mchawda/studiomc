@@ -95,16 +95,24 @@ jobs:
           grep -A2 "Developer ID" "$PBXPROJ" || echo "Warning: Developer ID not found"
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
+      # Core deps only. Torch/transformers live in the Pro pack; installing
+      # them here hid the fact that the frozen bundle could not import them.
       - name: Install Python dependencies
-        env:
-          CMAKE_ARGS: "-DGGML_METAL=on"
         run: |
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
 
+      - name: Fetch llama-server sidecar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
+
+      # Builds the PyInstaller bundle and smoke-tests it (launches the
+      # supervisor from the bundle with a clean data dir, asserts every
+      # service's /health and the built-in llama-server backend).
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
 
@@ -146,6 +154,12 @@ jobs:
           # Verify entire bundle
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "✓ Code signing complete"
+
+      # The hardened-runtime signature is what users run. Prove the signed
+      # services still start (dylib loading, llama-server exec) before we
+      # spend 10 minutes on DMG creation + notarization.
+      - name: Smoke-test signed app (fresh install)
+        run: python3 scripts/build/smoke_bundle.py --app "studiomc_app/build/macos/Build/Products/Release/Studiomc.app"
 
       - name: Create DMG
         run: |
@@ -261,16 +275,24 @@ jobs:
           grep -A2 "Developer ID" "$PBXPROJ" || echo "Warning: Developer ID not found"
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
+      # Core deps only. Torch/transformers live in the Pro pack; installing
+      # them here hid the fact that the frozen bundle could not import them.
       - name: Install Python dependencies
-        env:
-          CMAKE_ARGS: "-DGGML_METAL=on -DGGML_NATIVE=off"
         run: |
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
 
+      - name: Fetch llama-server sidecar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
+
+      # Builds the PyInstaller bundle and smoke-tests it (launches the
+      # supervisor from the bundle with a clean data dir, asserts every
+      # service's /health and the built-in llama-server backend).
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
 
@@ -306,6 +328,12 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "✓ Code signing complete"
+
+      # The hardened-runtime signature is what users run. Prove the signed
+      # services still start (dylib loading, llama-server exec) before we
+      # spend 10 minutes on DMG creation + notarization.
+      - name: Smoke-test signed app (fresh install)
+        run: python3 scripts/build/smoke_bundle.py --app "studiomc_app/build/macos/Build/Products/Release/Studiomc.app"
 
       - name: Create DMG
         run: |
@@ -383,15 +411,28 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/Scripts/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
 
+      - name: Fetch llama-server sidecar
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
+
+      # The Windows bundle has never been exercised on a real machine, so
+      # the fresh-launch smoke is advisory here until it has: build without
+      # it, then run it in a step that cannot fail the release.
       - name: Build services bundle
         shell: bash
-        run: |
-          cd services
-          source .venv/Scripts/activate
-          python -m PyInstaller studiomc_services.spec --clean --noconfirm
+        env:
+          SKIP_BUNDLE_SMOKE: "1"
+        run: bash scripts/build/build_services.sh
+
+      - name: Smoke test services bundle (advisory)
+        shell: bash
+        continue-on-error: true
+        run: python scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services
 
       - name: Build Flutter Windows app
         run: |
@@ -457,11 +498,13 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
-          pip cache purge
-          rm -rf /home/runner/.cache/pip
+
+      - name: Fetch llama-server sidecar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
 
       - name: Build services bundle
         run: bash scripts/build/build_services.sh

@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: LicenseRef-NIA-Proprietary
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
+import 'package:flutter/services.dart';
+
 import 'engine.dart';
 
-/// Method names and payloads for the llama.cpp mobile host.
+/// Method names, payloads, and error codes for the llama.cpp mobile host.
 ///
-/// Native iOS/Android implement this channel. Until llama.cpp is linked,
-/// `probe` is live and load/complete/embed return `llama_cpp_not_linked`.
+/// Native iOS (`ios/Runner/AppDelegate.swift`) and Android
+/// (`MobileInferenceHost.kt`) implement this channel. Until llama.cpp is
+/// linked into the host, `probe` is live and every other method fails with
+/// the typed `llama_cpp_not_linked` error. Generation on a phone today runs
+/// through `FcllamaInferenceEngine`, which only asks this host for `probe`
+/// and `embed`. `test/mobile_inference/channel_contract_test.dart` reads
+/// both native sources and asserts they match these constants.
 class MobileInferenceContract {
   static const methodChannel = 'studiomc.mobile_inference';
   static const tokenEventChannel = 'studiomc.mobile_inference/tokens';
@@ -29,7 +36,46 @@ class MobileInferenceContract {
     embed,
   };
 
+  /// Error codes the native host returns via `FlutterError` /
+  /// `result.error`. iOS and Android must use these exact strings;
+  /// `ChannelMobileInferenceEngine` maps them to typed exceptions.
   static const errorLlamaNotLinked = 'llama_cpp_not_linked';
+  static const errorModelFileMissing = 'model_file_missing';
+  static const errorNotLoaded = 'not_loaded';
+  static const errorBadPayload = 'bad_payload';
+
+  static const errorCodes = <String>{
+    errorLlamaNotLinked,
+    errorModelFileMissing,
+    errorNotLoaded,
+    errorBadPayload,
+  };
+
+  /// Turn a host-side [PlatformException] into the typed exception the
+  /// engine interface documents. Unknown codes stay a
+  /// [MobileInferenceHostException] so nothing is swallowed.
+  static Exception decodeError(
+    PlatformException error, {
+    required String method,
+    String? modelPath,
+  }) {
+    switch (error.code) {
+      case errorLlamaNotLinked:
+        return LlamaCppNotLinkedException(method, error.message);
+      case errorModelFileMissing:
+        return ModelFileMissingException(
+          modelPath ?? error.details?.toString() ?? '',
+        );
+      case errorNotLoaded:
+        return EngineNotLoadedException(error.message ?? 'not loaded');
+      default:
+        return MobileInferenceHostException(
+          code: error.code,
+          method: method,
+          message: error.message,
+        );
+    }
+  }
 
   static Map<String, dynamic> encodeLoad(LoadModelRequest request) {
     return {

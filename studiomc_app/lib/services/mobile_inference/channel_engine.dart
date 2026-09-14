@@ -9,6 +9,11 @@ import 'channel_contract.dart';
 import 'engine.dart';
 
 /// MobileInferenceEngine over the llama.cpp platform channel.
+///
+/// Every host error surfaces as a typed exception from `engine.dart`
+/// ([LlamaCppNotLinkedException], [ModelFileMissingException],
+/// [EngineNotLoadedException], [MobileInferenceHostException]). Nothing
+/// is swallowed into an empty result.
 class ChannelMobileInferenceEngine implements MobileInferenceEngine {
   ChannelMobileInferenceEngine({
     MethodChannel? methodChannel,
@@ -33,15 +38,34 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
   @override
   String? get loadedModelPath => _modelPath;
 
+  Future<Map<String, dynamic>?> _invoke(
+    String method, [
+    Map<String, dynamic>? args,
+    String? modelPath,
+  ]) async {
+    try {
+      return await _methods.invokeMapMethod<String, dynamic>(method, args);
+    } on PlatformException catch (e) {
+      throw MobileInferenceContract.decodeError(
+        e,
+        method: method,
+        modelPath: modelPath,
+      );
+    } on MissingPluginException catch (e) {
+      // No native host registered at all (e.g. desktop or a build that
+      // forgot to call MobileInferenceHost.register).
+      throw LlamaCppNotLinkedException(method, e.message);
+    }
+  }
+
   @override
   Future<HardwareCapabilities> probe() async {
-    final raw = await _methods.invokeMapMethod<String, dynamic>(
-      MobileInferenceContract.probe,
-    );
+    final raw = await _invoke(MobileInferenceContract.probe);
     if (raw == null) {
-      return const HardwareCapabilities(
-        ramBytes: 0,
-        deviceClass: DeviceClass.phone,
+      throw MobileInferenceHostException(
+        code: MobileInferenceContract.errorBadPayload,
+        method: MobileInferenceContract.probe,
+        message: 'host returned null',
       );
     }
     return MobileInferenceContract.decodeProbe(raw);
@@ -49,9 +73,10 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
 
   @override
   Future<void> load(LoadModelRequest request) async {
-    final raw = await _methods.invokeMapMethod<String, dynamic>(
+    final raw = await _invoke(
       MobileInferenceContract.load,
       MobileInferenceContract.encodeLoad(request),
+      request.modelPath,
     );
     if (raw?['ok'] != true) {
       throw ModelFileMissingException(request.modelPath);
@@ -62,22 +87,33 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
 
   @override
   Future<void> unload() async {
-    await _methods.invokeMapMethod<String, dynamic>(
-      MobileInferenceContract.unload,
-    );
-    _modelId = null;
-    _modelPath = null;
+    // Idempotent: nothing loaded means nothing to ask the host for.
+    if (!isLoaded) return;
+    try {
+      await _invoke(MobileInferenceContract.unload);
+    } finally {
+      _modelId = null;
+      _modelPath = null;
+    }
   }
 
   @override
   Future<CompletionResult> complete(CompletionRequest request) async {
     _requireLoaded();
-    final raw = await _methods.invokeMapMethod<String, dynamic>(
+    final raw = await _invoke(
       MobileInferenceContract.complete,
       MobileInferenceContract.encodeComplete(request),
     );
+    final text = raw?['text'];
+    if (text is! String) {
+      throw MobileInferenceHostException(
+        code: MobileInferenceContract.errorBadPayload,
+        method: MobileInferenceContract.complete,
+        message: 'missing text',
+      );
+    }
     return CompletionResult(
-      text: raw?['text'] as String? ?? '',
+      text: text,
       promptTokens: (raw?['promptTokens'] as num?)?.toInt() ?? 0,
       completionTokens: (raw?['completionTokens'] as num?)?.toInt() ?? 0,
     );
@@ -104,12 +140,25 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
       if (token != null && !controller.isClosed) {
         controller.add(token);
       }
-    }, onError: controller.addError, onDone: () {
+    }, onError: (Object error, StackTrace stack) {
+      if (controller.isClosed) return;
+      if (error is PlatformException) {
+        controller.addError(
+          MobileInferenceContract.decodeError(
+            error,
+            method: MobileInferenceContract.streamStart,
+          ),
+          stack,
+        );
+      } else {
+        controller.addError(error, stack);
+      }
+    }, onDone: () {
       if (!controller.isClosed) controller.close();
     });
 
     try {
-      final raw = await _methods.invokeMapMethod<String, dynamic>(
+      final raw = await _invoke(
         MobileInferenceContract.streamStart,
         MobileInferenceContract.encodeComplete(request),
       );
@@ -122,7 +171,9 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
             MobileInferenceContract.streamCancel,
             MobileInferenceContract.encodeStreamCancel(requestId),
           );
-        } catch (_) {}
+        } catch (_) {
+          // Cancel is best-effort; the host may already have finished.
+        }
       }
       await sub.cancel();
       if (!controller.isClosed) await controller.close();
@@ -132,12 +183,18 @@ class ChannelMobileInferenceEngine implements MobileInferenceEngine {
   @override
   Future<List<double>> embed(String text) async {
     _requireLoaded();
-    final raw = await _methods.invokeMapMethod<String, dynamic>(
+    final raw = await _invoke(
       MobileInferenceContract.embed,
       MobileInferenceContract.encodeEmbed(text),
     );
     final vector = raw?['vector'];
-    if (vector is! List) return const [];
+    if (vector is! List || vector.isEmpty) {
+      throw MobileInferenceHostException(
+        code: MobileInferenceContract.errorBadPayload,
+        method: MobileInferenceContract.embed,
+        message: 'missing or empty vector',
+      );
+    }
     return vector.map((v) => (v as num).toDouble()).toList();
   }
 

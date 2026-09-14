@@ -4,8 +4,9 @@
 """Downloader — HuggingFace model downloads with pause/resume and checksum.
 
 Downloads are tracked in memory via a dict keyed by model_id.
-Uses huggingface_hub for file discovery, then streams via httpx with
-Range-header support for pause/resume.
+Uses the public HuggingFace Hub REST API (plain httpx, no
+``huggingface_hub`` dependency) for file discovery, then streams via
+httpx with Range-header support for pause/resume.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import asyncio
 import fnmatch
 import hashlib
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -183,55 +185,100 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-# ── HuggingFace file resolution (runs in thread) ──
+# ── HuggingFace file resolution ──
+#
+# Uses the public Hub REST API over httpx instead of ``huggingface_hub``.
+# The Core bundle deliberately excludes ``huggingface_hub`` (it drags in
+# ``tokenizers``/``filelock`` and belongs to the Pro pack), and a lazy
+# ``from huggingface_hub import HfApi`` inside a frozen PyInstaller bundle
+# is exactly the kind of import that works in dev and explodes in
+# production. Plain HTTP has no such failure mode.
 
-def _resolve_hf_file(
+HF_API_BASE = "https://huggingface.co/api/models"
+HF_RESOLVE_BASE = "https://huggingface.co"
+
+
+def _hf_headers() -> dict[str, str]:
+    """Optional bearer token for gated / rate-limited repos."""
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    headers = {"Accept": "application/json", "User-Agent": "studiomc-model-manager"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _select_repo_file(
+    files: list[str],
+    filename_pattern: str,
+    source_ref: str,
+) -> str | None:
+    """Pick the file to download from a repo listing, or ``None``."""
+    matching = [f for f in files if fnmatch.fnmatch(f, filename_pattern)]
+    if not matching:
+        for pattern in ("*.gguf", "*.bin", "*.safetensors"):
+            matching = [f for f in files if fnmatch.fnmatch(f, pattern)]
+            if matching:
+                break
+    if not matching:
+        return None
+    return _pick_best_file(matching, source_ref)
+
+
+async def _resolve_hf_file(
     source_ref: str,
     filename_pattern: str,
     status: ModelDownloadStatus,
 ) -> tuple[str, str] | None:
     """Resolve the target filename and download URL from HuggingFace.
 
-    Returns (target_filename, download_url) or None on error (sets status).
+    Returns ``(target_filename, download_url)`` or ``None`` on error
+    (the error is recorded on ``status``).
     """
-    from huggingface_hub import HfApi
-
-    api = HfApi()
+    api_url = f"{HF_API_BASE}/{source_ref}"
     try:
-        files_info = api.list_repo_files(source_ref)
-        matching = [f for f in files_info if fnmatch.fnmatch(f, filename_pattern)]
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30.0, headers=_hf_headers()
+        ) as client:
+            resp = await client.get(api_url, params={"blobs": "true"})
+            if resp.status_code == 401 or resp.status_code == 403:
+                status.status = "error"
+                status.error = (
+                    f"{source_ref} is gated or private on HuggingFace. "
+                    "Set HF_TOKEN to a token with access and retry."
+                )
+                return None
+            if resp.status_code == 404:
+                status.status = "error"
+                status.error = f"Model repo not found on HuggingFace: {source_ref}"
+                return None
+            resp.raise_for_status()
+            info = resp.json()
 
-        if not matching:
-            for pattern in ("*.gguf", "*.bin", "*.safetensors"):
-                matching = [f for f in files_info if fnmatch.fnmatch(f, pattern)]
-                if matching:
-                    break
-
-        if not matching:
+        siblings = info.get("siblings") or []
+        files = [s.get("rfilename", "") for s in siblings if s.get("rfilename")]
+        target_file = _select_repo_file(files, filename_pattern, source_ref)
+        if target_file is None:
             status.status = "error"
             status.error = (
                 f"No model files found matching '{filename_pattern}' in {source_ref}"
             )
             return None
 
-        target_file = _pick_best_file(matching, source_ref)
+        # Size for progress tracking (present when ``blobs=true``).
+        for sibling in siblings:
+            if sibling.get("rfilename") == target_file:
+                size = sibling.get("size")
+                if isinstance(size, int) and size > 0:
+                    status.total_bytes = size
+                break
 
-        # Get file size for progress tracking
-        try:
-            repo_info = api.repo_info(source_ref)
-            for sibling in repo_info.siblings or []:
-                if sibling.rfilename == target_file:
-                    status.total_bytes = sibling.size or 0
-                    break
-        except Exception:
-            pass
-
-        # Construct the direct download URL
-        download_url = (
-            f"https://huggingface.co/{source_ref}/resolve/main/{target_file}"
-        )
+        download_url = f"{HF_RESOLVE_BASE}/{source_ref}/resolve/main/{target_file}"
         return target_file, download_url
 
+    except httpx.HTTPError as e:
+        status.status = "error"
+        status.error = f"Could not reach HuggingFace: {e}"
+        return None
     except Exception as e:
         status.status = "error"
         status.error = f"HF resolution error: {e}"
@@ -252,10 +299,8 @@ async def _download_worker(
     try:
         status.status = "downloading"
 
-        # 1) Resolve the file to download (blocking HF API call)
-        result = await asyncio.to_thread(
-            _resolve_hf_file, source_ref, filename_pattern, status
-        )
+        # 1) Resolve the file to download (async HF REST call)
+        result = await _resolve_hf_file(source_ref, filename_pattern, status)
         if result is None:
             return  # Error already recorded in status
 
