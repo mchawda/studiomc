@@ -8,6 +8,9 @@
 # PyInstaller spec (which ships ``bin/`` as data inside the frozen
 # bundle) and every platform build pick it up automatically.
 #
+# Shipped desktop targets: darwin-arm64 and Windows x64. Linux downloads
+# are kept for CI/dev cross-checks only; Linux desktop is not released.
+#
 # Upstream release scheme (2026):
 #   * Build tags ``bNNNNN`` are pre-releases that carry the binaries:
 #       llama-bNNNNN-bin-macos-arm64.tar.gz

@@ -11,10 +11,12 @@
 #                       not installed, so any Core module that imports it
 #                       fails here instead of on a user's machine.
 #   2. bundle-smoke     Build the PyInstaller bundle exactly like release.yml
-#                       (ubuntu + macos-arm64), run `--selftest` inside the
-#                       frozen executable, then launch it with a clean data
-#                       dir and require /health, readiness and every child's
-#                       health within the Flutter app's real timeouts.
+#                       (macos-arm64 primary; ubuntu optional cross-check),
+#                       run `--selftest` inside the frozen executable, then
+#                       launch it with a clean data dir and require /health,
+#                       readiness and every child's health within the Flutter
+#                       app's real timeouts. Linux desktop is not shipped;
+#                       the ubuntu leg only catches PyInstaller regressions.
 #   3. flutter          `flutter analyze` + `flutter test` for the desktop app.
 #
 # Apple signing/notarisation and the DMG itself still only happen in
@@ -82,18 +84,10 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -q
 
-  # ── Frozen bundle: build, selftest, first launch ──────────────────────
+  # ── Frozen bundle: build, selftest, first launch (shipped platform) ─
   bundle-smoke:
-    name: Bundle smoke (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: ubuntu-x64
-            runs-on: ubuntu-latest
-          - label: macos-arm64
-            runs-on: macos-14
-    runs-on: ${{ matrix.runs-on }}
+    name: Bundle smoke (macos-arm64)
+    runs-on: macos-14
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -131,6 +125,44 @@ jobs:
       # launch: supervisor /health and readiness, every child healthy,
       # llama-server found, hardware scan + recommendation, clean shutdown
       # and a SIGKILL of the supervisor that must take every child with it.
+      - name: Smoke test frozen bundle (clean first launch)
+        run: python3 scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services
+
+      - name: Report bundle size
+        if: always()
+        run: du -sh services/dist/studiomc_services || true
+
+  # ── Frozen bundle cross-check (Linux desktop not shipped) ─────────────
+  bundle-smoke-ubuntu:
+    name: Bundle smoke (ubuntu-x64, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Core dependencies + PyInstaller
+        working-directory: services
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install . pyinstaller
+
+      - name: Fetch llama-server sidecar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/build/fetch_llama_server.sh
+
+      - name: Build services bundle
+        env:
+          SKIP_BUNDLE_SMOKE: "1"
+        run: bash scripts/build/build_services.sh
+
       - name: Smoke test frozen bundle (clean first launch)
         run: python3 scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services
 

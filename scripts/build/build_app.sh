@@ -36,61 +36,10 @@ case "$OS" in
         exec bash "$SCRIPT_DIR/build_macos.sh" "$@"
         ;;
     Linux)
-        echo "╔══════════════════════════════════════════════════════╗"
-        echo "║  Studiomc — Linux Production Build                  ║"
-        echo "╚══════════════════════════════════════════════════════╝"
-        echo ""
-
-        SERVICES_BUNDLE="$SERVICES_DIR/dist/studiomc_services"
-
-        # Step 1: Build services
-        if [ "$SKIP_SERVICES" = true ]; then
-            echo "⊘ Skipping services build (--skip-services)"
-            if [ ! -d "$SERVICES_BUNDLE" ]; then
-                echo "✗ Services bundle not found at $SERVICES_BUNDLE"
-                exit 1
-            fi
-        else
-            CLEAN_ARG=""
-            if [ "$CLEAN" = true ]; then CLEAN_ARG="--clean"; fi
-            bash "$SCRIPT_DIR/build_services.sh" $CLEAN_ARG
-        fi
-
-        # Step 2: Build Flutter
-        if [ "$SKIP_FLUTTER" = true ]; then
-            echo "⊘ Skipping Flutter build (--skip-flutter)"
-        else
-            if [ "$CLEAN" = true ]; then
-                cd "$FLUTTER_DIR" && flutter clean
-            fi
-            cd "$FLUTTER_DIR"
-            flutter build linux --release
-            echo "✓ Flutter Linux build complete"
-        fi
-
-        # Step 3: Embed services
-        BUNDLE_DIR="$FLUTTER_DIR/build/linux/x64/release/bundle"
-        if [ ! -d "$BUNDLE_DIR" ]; then
-            echo "✗ Flutter Linux build not found at $BUNDLE_DIR"
-            exit 1
-        fi
-
-        SERVICES_DEST="$BUNDLE_DIR/studiomc_services"
-        if [ -d "$SERVICES_DEST" ]; then rm -rf "$SERVICES_DEST"; fi
-        cp -R "$SERVICES_BUNDLE" "$SERVICES_DEST"
-        chmod +x "$SERVICES_DEST/studiomc_services" 2>/dev/null || true
-        echo "✓ Services embedded into Linux bundle"
-
-        echo ""
-        echo "╔══════════════════════════════════════════════════════╗"
-        echo "║  ✓ Linux build complete                             ║"
-        echo "╠══════════════════════════════════════════════════════╣"
-        echo "║  Bundle: $BUNDLE_DIR"
-        echo "╚══════════════════════════════════════════════════════╝"
-        echo ""
-        echo "Next steps:"
-        echo "  • AppImage: bash scripts/release/linux_appimage.sh"
-        echo "  • Test:     $BUNDLE_DIR/studiomc_app"
+        echo "✗ Linux desktop builds are not shipped." >&2
+        echo "  Studiomc supports macOS Apple Silicon and Windows only." >&2
+        echo "  The studiomc_app/linux/ scaffold remains for Flutter dev only." >&2
+        exit 1
         ;;
     MINGW*|MSYS*|CYGWIN*)
         echo "Detected Windows — use scripts/build_windows.ps1 instead"

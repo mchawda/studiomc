@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/mchawda/studiomc/releases/latest"><img src="https://img.shields.io/github/v/release/mchawda/studiomc?style=flat-square&color=4A90D9" alt="Release" /></a>
   <a href="https://github.com/mchawda/studiomc/blob/main/LICENSE.md"><img src="https://img.shields.io/badge/license-Source--Available-orange?style=flat-square" alt="License" /></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-dart-02569B?style=flat-square&logo=flutter" alt="Flutter" />
 </p>
 
@@ -78,8 +78,10 @@ Studiomc is a desktop AI assistant that runs large language models entirely on y
 
 ### Install from Release
 
-1. Download the latest `.dmg` from [Releases](https://github.com/mchawda/studiomc/releases/latest)
-2. Open the DMG and drag **Studiomc** to Applications
+1. Download the latest installer for your platform from [Releases](https://github.com/mchawda/studiomc/releases/latest):
+   - **macOS (Apple Silicon):** `.dmg` (M1/M2/M3/M4 Macs)
+   - **Windows:** `.exe` setup
+2. Open the DMG (macOS) or run the setup (Windows) and install **Studiomc**
 3. Launch Studiomc — it scans your hardware and recommends a model
 4. The model downloads from HuggingFace automatically
 5. You're chatting in under 2 minutes
@@ -124,7 +126,7 @@ Flutter App ── HTTP/WS ──▶ Local Supervisor
                               └── Data Recipes (document → training dataset)
 ```
 
-- **Frontend:** Flutter (Dart) — macOS, Windows, iOS, Android
+- **Frontend:** Flutter (Dart) — macOS Apple Silicon, Windows (desktop); iOS, Android (mobile)
 - **Inference:** MLX (Apple Silicon), llama.cpp, SpliceLLM (layer streaming), Ollama, LM Studio, frontier APIs
 - **Training:** MLX LoRA/QLoRA on Apple Silicon, PyTorch PEFT on CUDA/CPU, model export (GGUF, safetensors, HuggingFace)
 - **Models:** HuggingFace GGUF or safetensors; splitter produces per-layer files for out-of-core

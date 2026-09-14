@@ -38,11 +38,19 @@ for arg in "$@"; do
     esac
 done
 
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_ARCH" != "arm64" ]; then
+    echo "✗ Studiomc macOS product builds require Apple Silicon (arm64)." >&2
+    echo "  This host is $HOST_ARCH. Intel Mac desktop builds are not shipped." >&2
+    echo "  Use an Apple Silicon Mac, or build for Windows on a Windows host." >&2
+    exit 1
+fi
+
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║  Studiomc — macOS Production Build                  ║"
+echo "║  Studiomc — macOS Production Build (Apple Silicon)  ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  Platform:  $(uname -m) / macOS $(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
+echo "  Platform:  $HOST_ARCH / macOS $(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
 echo "  Flutter:   $(flutter --version 2>/dev/null | head -1 || echo 'not found')"
 echo ""
 

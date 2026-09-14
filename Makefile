@@ -13,10 +13,10 @@
 .PHONY: help dev services flutter \
         fetch-llama-server build-pro-pack \
         train-studiomc-4b-dry \
-        build-services build-app build-macos build-linux \
+        build-services build-app build-macos \
         build-ios build-android \
         test-mobile-inference mobile-inference \
-        release-macos release-linux \
+        release-macos \
         smoke-fresh-install smoke-bundle test-services \
         clean clean-services clean-flutter clean-llama clean-pro-pack \
         check-deps eval
@@ -37,16 +37,14 @@ help:
 	@echo "  make build-pro-pack      Build the optional Pro pack tarball (~1 GB)"
 	@echo "  make build-services      Bundle Python services (PyInstaller; auto fetches llama-server)"
 	@echo "  make build-app           Build services + Flutter app"
-	@echo "  make build-macos      Full macOS build with embedded Python"
-	@echo "  make build-linux      Full Linux build with embedded Python"
+	@echo "  make build-macos      Full macOS build (Apple Silicon only)"
 	@echo "  make build-ios        Build iOS app (no Python backend)"
 	@echo "  make build-android    Build Android APK (no Python backend)"
 	@echo "  make test-mobile-inference  Flutter tests for on-device inference"
 	@echo "  make mobile-inference       Print the llama.cpp mobile follow-up"
 	@echo ""
 	@echo "Release:"
-	@echo "  make release-macos    Build + create .dmg installer"
-	@echo "  make release-linux    Build + create .AppImage"
+	@echo "  make release-macos    Build + create .dmg installer (Apple Silicon)"
 	@echo ""
 	@echo "Verification:"
 	@echo "  make test-services         Python unit tests (Core/Pro boundary, spec, health)"
@@ -115,8 +113,9 @@ build-app: build-services
 build-macos: build-services
 	bash scripts/build/build_macos.sh --skip-services
 
-build-linux: build-services
-	bash scripts/build/build_app.sh --skip-services
+build-linux:
+	@echo "✗ Linux desktop builds are not shipped (macOS Apple Silicon + Windows only)."
+	@exit 1
 
 # ── Mobile builds (no Python backend — on-device inference only) ──
 
@@ -169,10 +168,7 @@ smoke-bundle:
 
 smoke-fresh-install:
 	@APP="$$(ls -d studiomc_app/build/macos/Build/Products/Release/*.app 2>/dev/null | head -1)"; \
-	if [ -z "$$APP" ]; then \
-		APP="studiomc_app/build/linux/x64/release/bundle"; \
-	fi; \
-	if [ ! -e "$$APP" ]; then echo "✗ No built app found. Run: make build-macos (or make build-linux)"; exit 1; fi; \
+	if [ ! -e "$$APP" ]; then echo "✗ No built app found. Run: make build-macos"; exit 1; fi; \
 	echo "Smoke-testing fresh install of $$APP"; \
 	python3 scripts/build/smoke_bundle.py --app "$$APP" $(SMOKE_ARGS)
 
@@ -181,8 +177,9 @@ smoke-fresh-install:
 release-macos: build-macos
 	bash scripts/release/macos_dmg.sh
 
-release-linux: build-linux
-	bash scripts/release/linux_appimage.sh
+release-linux:
+	@echo "✗ Linux desktop releases are not shipped (macOS Apple Silicon + Windows only)."
+	@exit 1
 
 # ── Clean ────────────────────────────────────────────────────────────────
 
@@ -230,4 +227,4 @@ check-deps:
 	@echo ""
 	@echo "Platform tools:"
 	@if command -v create-dmg >/dev/null 2>&1; then echo "  create-dmg:  ✓"; else echo "  create-dmg:  ✗ (brew install create-dmg)"; fi
-	@if command -v appimagetool >/dev/null 2>&1; then echo "  appimagetool: ✓"; else echo "  appimagetool: ✗ (for Linux AppImage)"; fi
+	@if command -v appimagetool >/dev/null 2>&1; then echo "  appimagetool: ✓ (dev only; Linux desktop not shipped)"; else echo "  appimagetool: ✗"; fi

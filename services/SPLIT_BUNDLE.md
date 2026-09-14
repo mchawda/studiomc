@@ -7,7 +7,7 @@ pack. Every layer that imports a heavy ML library must read this first.
 
 | Artefact       | Size       | Contains                                                        | Shipped how                                  |
 | -------------- | ---------- | --------------------------------------------------------------- | -------------------------------------------- |
-| **Core bundle**| ~80–150 MB | FastAPI services, `llama-server` sidecar binary, lightweight RAG (TF-IDF / llama-server `/embedding`), supervisor, model manager, document pipeline | DMG / AppImage / MSI shipped from GitHub Releases. PyInstaller `--onedir`. Code-signed. |
+| **Core bundle**| ~80–150 MB | FastAPI services, `llama-server` sidecar binary, lightweight RAG (TF-IDF / llama-server `/embedding`), supervisor, model manager, document pipeline | macOS Apple Silicon DMG + Windows installer shipped from GitHub Releases. PyInstaller `--onedir`. Code-signed on macOS. |
 | **Pro pack**   | ~1.0–1.3 GB| Standalone CPython 3.11 venv with `torch`, `transformers`, `peft`, `accelerate`, `sentence-transformers`, `safetensors`, `mlx`/`mlx_lm` (Apple Silicon), plus the SpliceLLM out-of-core engine wheel | tarball downloaded from GitHub Releases on first use; extracted to user data dir |
 
 The Core bundle **never** imports torch. Period. CI enforces this with
