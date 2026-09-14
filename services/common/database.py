@@ -9,9 +9,16 @@ All tables created on first connection if they don't exist.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
+import sqlite3
+
 import aiosqlite
 
 from .config import DB_PATH, ensure_dirs
+
+logger = logging.getLogger("common.database")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -284,16 +291,54 @@ CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned DESC, updated_
 """
 
 
+# The supervisor starts every service at once, so on a fresh install nine
+# processes open a database that does not exist yet and all try to switch
+# it to WAL and create the schema in the same instant. Switching the
+# journal mode needs an exclusive lock and SQLite does not always consult
+# the busy handler for it, so without a retry the losers die with
+# "database is locked" before their /health ever answers and the
+# supervisor restarts them 15s later. Seen on every third clean launch.
+DB_BUSY_TIMEOUT_SECONDS = 30.0
+DB_INIT_ATTEMPTS = 20
+DB_INIT_RETRY_BASE_SECONDS = 0.1
+
+
+def _is_locked_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
 async def get_db() -> aiosqlite.Connection:
-    """Open (or create) the database, apply schema, return connection."""
+    """Open (or create) the database, apply schema, return connection.
+
+    Safe to call from many processes at the same time: initialisation is
+    retried with jittered backoff while another process holds the lock.
+    """
     ensure_dirs()
-    db = await aiosqlite.connect(str(DB_PATH))
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    await db.executescript(_SCHEMA)
-    await db.commit()
-    return db
+    last_exc: BaseException | None = None
+    for attempt in range(1, DB_INIT_ATTEMPTS + 1):
+        db = await aiosqlite.connect(str(DB_PATH), timeout=DB_BUSY_TIMEOUT_SECONDS)
+        try:
+            db.row_factory = aiosqlite.Row
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA foreign_keys=ON")
+            await db.executescript(_SCHEMA)
+            await db.commit()
+            return db
+        except sqlite3.OperationalError as exc:
+            await db.close()
+            if not _is_locked_error(exc) or attempt == DB_INIT_ATTEMPTS:
+                raise
+            last_exc = exc
+            delay = DB_INIT_RETRY_BASE_SECONDS * attempt + random.uniform(0, DB_INIT_RETRY_BASE_SECONDS)
+            logger.info(
+                "Database locked by another service during init (attempt %d/%d); retrying in %.2fs",
+                attempt, DB_INIT_ATTEMPTS, delay,
+            )
+            await asyncio.sleep(delay)
+        except BaseException:
+            await db.close()
+            raise
+    raise RuntimeError(f"database init failed after {DB_INIT_ATTEMPTS} attempts") from last_exc
 
 
 class Database:

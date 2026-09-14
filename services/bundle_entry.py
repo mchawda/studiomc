@@ -144,13 +144,32 @@ def _run_service(name: str) -> None:
 
     _watch_supervisor(name)
 
-    uvicorn.run(
-        app,
-        host=SERVICE_HOST,
-        port=port,
-        reload=False,
-        log_level="info",
-    )
+    # uvicorn.run() calls sys.exit(3) when lifespan startup fails, but
+    # sys.exit only requests interpreter shutdown, which waits for every
+    # non-daemon thread. A half-initialised aiosqlite connection (its
+    # worker is a non-daemon thread) left the failed service alive with no
+    # listener: never healthy, never "exited", restarted 15s later at
+    # best. A child that failed to start must be visibly dead at once.
+    code = 0
+    try:
+        uvicorn.run(
+            app,
+            host=SERVICE_HOST,
+            port=port,
+            reload=False,
+            log_level="info",
+        )
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+    except BaseException:
+        import traceback
+
+        traceback.print_exc()
+        code = 1
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    os._exit(code)
 
 
 # Heavy ML libraries that live in the Pro pack venv. If any of these show

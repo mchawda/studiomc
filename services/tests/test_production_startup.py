@@ -146,6 +146,82 @@ async def test_start_all_stops_spawning_once_shutdown_requested(monkeypatch) -> 
     assert len(launched) == 2, launched
 
 
+# ── Concurrent first-launch database init ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_db_survives_another_process_holding_the_lock(monkeypatch, tmp_path: Path, caplog) -> None:
+    """Nine children open a brand-new DB at once; the losers must retry, not die."""
+    import logging
+    import sqlite3
+    import threading
+
+    from common import database
+
+    caplog.set_level(logging.INFO, logger="common.database")
+
+    db_path = tmp_path / "studiomc.db"
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    monkeypatch.setattr(database, "DB_INIT_RETRY_BASE_SECONDS", 0.05)
+    monkeypatch.setattr(database, "DB_BUSY_TIMEOUT_SECONDS", 0.05)
+
+    # Another "service" holds an exclusive lock for a moment, exactly the
+    # window in which journal_mode=WAL fails with "database is locked".
+    locked = threading.Event()
+
+    def hold_lock() -> None:
+        holder = sqlite3.connect(str(db_path), isolation_level=None)
+        holder.execute("BEGIN EXCLUSIVE")
+        locked.set()
+        time.sleep(0.4)
+        holder.execute("COMMIT")
+        holder.close()
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert locked.wait(5)
+
+    t0 = time.monotonic()
+    db = await database.get_db()
+    try:
+        row = await (await db.execute("PRAGMA journal_mode")).fetchone()
+        assert row[0].lower() == "wal"
+    finally:
+        await db.close()
+        thread.join()
+    assert time.monotonic() - t0 >= 0.3, "did not actually wait for the lock holder"
+    assert "Database locked by another service" in caplog.text
+
+
+def test_child_service_exits_hard_after_uvicorn(monkeypatch) -> None:
+    """A failed startup must end the process even if a non-daemon thread lingers."""
+    import bundle_entry
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(bundle_entry, "_watch_supervisor", lambda name: None)
+
+    import uvicorn
+
+    def fake_run(*args, **kwargs):
+        raise SystemExit(3)
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(os, "_exit", lambda code: calls.setdefault("code", code))
+    bundle_entry._run_service("inference")
+    assert calls["code"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_db_reraises_non_lock_errors(monkeypatch, tmp_path: Path) -> None:
+    from common import database
+
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "missing-dir" / "x.db")
+    monkeypatch.setattr(database, "ensure_dirs", lambda: None)
+    with pytest.raises(Exception) as excinfo:
+        await database.get_db()
+    assert "locked" not in str(excinfo.value).lower()
+
+
 # ── Stale port cleanup ──────────────────────────────────────────────────
 
 
