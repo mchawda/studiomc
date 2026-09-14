@@ -41,4 +41,6 @@ product/
 product-plan/
 Blueprint.md
 services/build/
+# llama-server sidecar fetched by scripts/build/fetch_llama_server.sh (65+ MB of binaries)
+services/bin/
 .studiomc_test/

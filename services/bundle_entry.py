@@ -101,6 +101,87 @@ def _run_service(name: str) -> None:
     )
 
 
+# Heavy ML libraries that live in the Pro pack venv. If any of these show
+# up in ``sys.modules`` after importing the Core services, the split
+# bundle contract is broken (see SPLIT_BUNDLE.md) and the frozen build is
+# either bloated or, worse, crashes at import time on a fresh machine.
+_PRO_ONLY_ROOTS = (
+    "torch",
+    "transformers",
+    "peft",
+    "accelerate",
+    "sentence_transformers",
+    "safetensors",
+    "mlx",
+    "mlx_lm",
+    "llama_cpp",
+    "unsloth",
+)
+
+
+def _run_selftest() -> None:
+    """Import every Core service the supervisor will spawn and exit.
+
+    PyInstaller silently drops modules it cannot trace (``importlib``
+    string imports, lazy imports behind ``try``) and its ``excludes`` list
+    only *skips* packages instead of failing the build. Both failure
+    modes surface on the user's machine as ``Cannot import <svc>.app``
+    in a child-service log while the supervisor itself looks healthy.
+    Running this inside the frozen executable is the only way to catch
+    them before a release ships.
+    """
+    import importlib
+    import traceback
+
+    from supervisor.manager import DEFERRED_SERVICES, MANAGED_SERVICES
+
+    frozen = getattr(sys, "frozen", False)
+    print(f"[selftest] frozen={frozen} executable={sys.executable}")
+
+    failures: list[str] = []
+    core_services = [n for n in MANAGED_SERVICES if n not in DEFERRED_SERVICES]
+    for name in ["supervisor", *core_services]:
+        mod_name = f"{name}.app"
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            failures.append(f"{mod_name}: import failed\n{traceback.format_exc()}")
+            print(f"[selftest] FAIL  {mod_name}")
+            continue
+        if getattr(mod, "app", None) is None:
+            failures.append(f"{mod_name}: no 'app' attribute")
+            print(f"[selftest] FAIL  {mod_name} (no app)")
+            continue
+        print(f"[selftest] ok    {mod_name}")
+
+    # Deferred services run under the Pro venv, but their *source* must
+    # still ship as data so ``pro-env/bin/python training/app.py`` works.
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+    for name in DEFERRED_SERVICES:
+        rel = MANAGED_SERVICES[name]
+        if not (base / rel).is_file():
+            failures.append(f"{name}: {rel} missing from bundle data at {base}")
+            print(f"[selftest] FAIL  {name} ({rel} not shipped)")
+        else:
+            print(f"[selftest] ok    {name} ({rel} shipped as data)")
+
+    leaked = sorted(
+        m for m in sys.modules if m.split(".", 1)[0] in _PRO_ONLY_ROOTS
+    )
+    if leaked:
+        failures.append(
+            "Pro-only modules imported by Core services: " + ", ".join(leaked[:20])
+        )
+        print(f"[selftest] FAIL  Pro-only modules leaked into Core: {leaked[:20]}")
+    else:
+        print("[selftest] ok    no Pro-only modules imported")
+
+    if failures:
+        print("\n[selftest] FAILED\n" + "\n".join(failures), file=sys.stderr)
+        sys.exit(1)
+    print("[selftest] PASSED")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Studiomc backend services entry-point.",
@@ -112,11 +193,19 @@ def main() -> None:
         help="Name of the child service to launch (e.g. inference, clara). "
         "If omitted, the supervisor is started.",
     )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="Import every Core service inside this executable, verify no "
+        "Pro-only library leaked in, then exit 0/1. Used by CI.",
+    )
     args = parser.parse_args()
 
     _fixup_paths()
 
-    if args.service:
+    if args.selftest:
+        _run_selftest()
+    elif args.service:
         _run_service(args.service)
     else:
         _run_supervisor()

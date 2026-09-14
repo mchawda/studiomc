@@ -95,6 +95,8 @@ include = [
     "lre*",
     "training*",
     "data_recipes*",
+    "mcp*",
+    "memory*",
     "eval*",
 ]
 
