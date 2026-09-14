@@ -15,7 +15,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -36,7 +36,7 @@ PRO_ONLY_MODULES: set[str] = {
 
 
 @pytest.fixture
-def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     """Replace ``__import__`` with a guard that records & blocks Pro modules.
 
     Returns the list of Pro module names something *attempted* to import.
@@ -56,12 +56,30 @@ def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return original(name, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(builtins, "__import__", guarded)
-    # Drop any cached imports from previous tests so the guard runs.
+    # Drop any cached imports from previous tests so the guard runs, but
+    # restore them afterwards: other test modules hold references to the
+    # original module objects (and their singletons such as SQLite stores),
+    # and leaving fresh duplicates in ``sys.modules`` makes those tests
+    # order-dependent.
+    evicted: dict[str, object] = {}
     for mod in list(sys.modules):
         root = mod.split(".", 1)[0]
-        if root in PRO_ONLY_MODULES or mod.startswith("inference"):
+        if root in PRO_ONLY_MODULES or root in SERVICE_PACKAGES:
+            evicted[mod] = sys.modules.pop(mod)
+    yield attempted
+    for mod in list(sys.modules):
+        root = mod.split(".", 1)[0]
+        if root in PRO_ONLY_MODULES or root in SERVICE_PACKAGES:
             sys.modules.pop(mod, None)
-    return attempted
+    sys.modules.update(evicted)
+
+
+# First-party packages whose cached imports must be evicted so the guard
+# actually observes their module-level imports.
+SERVICE_PACKAGES: set[str] = {
+    "inference", "clara", "common", "documents", "model_manager", "lre",
+    "orchestrator", "data_recipes", "mcp", "memory", "supervisor", "eval",
+}
 
 
 CORE_MODULES: list[str] = [
@@ -82,11 +100,29 @@ CORE_MODULES: list[str] = [
     "inference.backends.studiomc",
     "inference.router",                      # constructs without torch
     "common.pro_pack",
+    "common.build_info",
     "clara.compressor",                      # 3-tier embed (sbert → llama → tfidf)
     "eval",                                  # grounded-eval scorer (no torch)
     "eval.scorer",
     "eval.metrics",
     "eval.retrieval",
+    # ── Service entry points ────────────────────────────────────────────
+    # These are what ``bundle_entry.py --service <name>`` imports inside the
+    # frozen bundle. v0.9.9.x shipped with ``inference.app`` importing torch
+    # at module load; the child died on startup and the supervisor restarted
+    # it until "FAILED". Every managed service must import Pro-free.
+    "inference.app",
+    "model_manager.app",
+    "model_manager.downloader",              # HF downloads must not need huggingface_hub
+    "documents.app",
+    "clara.app",
+    "lre.app",
+    "orchestrator.app",
+    "data_recipes.app",
+    "mcp.app",
+    "memory.app",
+    "supervisor.app",
+    "supervisor.routes",
 ]
 
 
