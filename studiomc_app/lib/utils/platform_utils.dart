@@ -15,7 +15,16 @@ bool get isDesktop => Platform.isMacOS || Platform.isLinux || Platform.isWindows
 ///
 /// This ensures the Flutter app and Python services share the same
 /// models directory, database paths, etc.
+///
+/// `STUDIOMC_HOME` overrides the location on both sides (the Python
+/// `common/config.py` honours the same variable). Used by the fresh-install
+/// smoke test to run against an empty data dir without touching the
+/// user's real one.
 String get studiomcDataDir {
+  final override = Platform.environment['STUDIOMC_HOME'];
+  if (override != null && override.isNotEmpty) {
+    return override;
+  }
   if (Platform.isMacOS) {
     final home = Platform.environment['HOME'] ?? '';
     return '$home/Library/Application Support/studiomc';
