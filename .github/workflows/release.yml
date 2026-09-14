@@ -95,18 +95,28 @@ jobs:
           grep -A2 "Developer ID" "$PBXPROJ" || echo "Warning: Developer ID not found"
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
+      # Core deps only. The Pro pack (torch etc.) ships separately via
+      # pro_pack.yml; keeping it out of this venv guarantees PyInstaller
+      # cannot pull it into the Core bundle.
       - name: Install Python dependencies
-        env:
-          CMAKE_ARGS: "-DGGML_METAL=on"
         run: |
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
+
+      # Without this binary the Core bundle has no inference engine.
+      - name: Fetch llama-server sidecar
+        run: bash scripts/build/fetch_llama_server.sh
 
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
+
+      # Fresh-user launch of the frozen bundle before it is embedded, signed
+      # and notarised. Fails the release instead of the user's first launch.
+      - name: Smoke test services bundle
+        run: python3 scripts/ci/smoke_services_bundle.py --require-llama-server
 
       # ── Build with Xcode signing the app + frameworks with Developer ID ──
       - name: Build macOS app
@@ -262,17 +272,21 @@ jobs:
           grep "DEVELOPMENT_TEAM" "$PBXPROJ" || echo "Warning: DEVELOPMENT_TEAM not found"
 
       - name: Install Python dependencies
-        env:
-          CMAKE_ARGS: "-DGGML_METAL=on -DGGML_NATIVE=off"
         run: |
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
+
+      - name: Fetch llama-server sidecar
+        run: bash scripts/build/fetch_llama_server.sh
 
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
+
+      - name: Smoke test services bundle
+        run: python3 scripts/ci/smoke_services_bundle.py --require-llama-server
 
       - name: Build macOS app
         run: bash scripts/build/build_macos.sh --skip-services
@@ -383,7 +397,7 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/Scripts/activate
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
 
       - name: Build services bundle
@@ -392,6 +406,15 @@ jobs:
           cd services
           source .venv/Scripts/activate
           python -m PyInstaller studiomc_services.spec --clean --noconfirm
+
+      # Windows does not fetch llama-server yet (fetch_llama_server.sh has
+      # no matching upstream asset), so the sidecar assertion is skipped and
+      # the step is advisory until the Windows bundle is exercised on a
+      # real machine.
+      - name: Smoke test services bundle
+        shell: bash
+        continue-on-error: true
+        run: python scripts/ci/smoke_services_bundle.py
 
       - name: Build Flutter Windows app
         run: |
@@ -457,14 +480,17 @@ jobs:
           cd services
           python -m venv .venv
           source .venv/bin/activate
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install ".[inference]"
+          pip install .
           pip install pyinstaller
-          pip cache purge
-          rm -rf /home/runner/.cache/pip
+
+      - name: Fetch llama-server sidecar
+        run: bash scripts/build/fetch_llama_server.sh
 
       - name: Build services bundle
         run: bash scripts/build/build_services.sh
+
+      - name: Smoke test services bundle
+        run: python3 scripts/ci/smoke_services_bundle.py --require-llama-server
 
       - name: Build Flutter Linux app
         run: |
