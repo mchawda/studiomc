@@ -130,11 +130,20 @@ def test_mobile_catalog_studiomc_ids_match_desktop_registry() -> None:
     )
     if not catalog.is_file():
         pytest.skip("Flutter app not checked out next to services/")
-    mobile_ids = set(re.findall(r"id:\s*'(studiomc-[^']+)'", catalog.read_text(encoding="utf-8")))
+    source = catalog.read_text(encoding="utf-8")
+    mobile_ids = set(re.findall(r"id:\s*'(studiomc-[^']+)'", source))
     assert mobile_ids == STUDIOMC_IDS
     # Non-Studiomc aliases must also be real desktop catalog ids.
-    aliases = set(re.findall(r"desktopCatalogId:\s*'([^']+)'", catalog.read_text(encoding="utf-8")))
+    aliases = set(re.findall(r"desktopCatalogId:\s*'([^']+)'", source))
     assert aliases <= set(CURATED_BY_ID)
+    # The phone engine must disable Qwen3 thinking wherever desktop does.
+    for model_id in STUDIOMC_IDS:
+        manifest = json.loads(CURATED_BY_ID[model_id].manifest_json or "{}")
+        kwargs = manifest.get("chat_template_kwargs", {})
+        block = re.search(rf"id:\s*'{re.escape(model_id)}'.*?\);", source, re.S)
+        assert block is not None, model_id
+        has_no_think = "'enable_thinking': false" in block.group(0)
+        assert has_no_think == (kwargs.get("enable_thinking") is False), model_id
 
 
 def test_seed_fixtures_cover_task_mix() -> None:

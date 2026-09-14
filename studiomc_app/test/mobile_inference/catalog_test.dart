@@ -26,6 +26,65 @@ void main() {
       expect(studiomcIds, {'studiomc-0.6b', 'studiomc-4b'});
     });
 
+    test('only the hybrid-thinking Qwen3 build carries enable_thinking=false',
+        () {
+      expect(MobileModelCatalog.studiomc06b.chatTemplateKwargs,
+          {'enable_thinking': false});
+      // Qwen3-4B-Instruct-2507 is a plain instruct model.
+      expect(MobileModelCatalog.studiomc4b.chatTemplateKwargs, isEmpty);
+      for (final spec in MobileModelCatalog.all) {
+        if (spec.id != 'studiomc-0.6b') {
+          expect(spec.chatTemplateKwargs, isEmpty, reason: spec.id);
+        }
+      }
+    });
+
+    test('chatTemplateKwargsFor resolves by id, filename, then family', () {
+      expect(MobileModelCatalog.chatTemplateKwargsFor(modelId: 'studiomc-0.6b'),
+          {'enable_thinking': false});
+      expect(
+        MobileModelCatalog.chatTemplateKwargsFor(
+          modelId: 'STUDIOMC-0.6B-Q4_K_M.gguf',
+        ),
+        {'enable_thinking': false},
+      );
+      expect(
+        MobileModelCatalog.chatTemplateKwargsFor(
+          modelPath: '/models/Qwen_Qwen3-0.6B-Q4_K_M.gguf',
+        ),
+        {'enable_thinking': false},
+      );
+      expect(
+        MobileModelCatalog.chatTemplateKwargsFor(
+          modelPath: '/models/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+        ),
+        isEmpty,
+      );
+      expect(
+        MobileModelCatalog.chatTemplateKwargsFor(
+          modelId: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+        ),
+        isEmpty,
+      );
+      expect(MobileModelCatalog.byFilename('/x/studiomc-4b-q4_k_m.gguf')?.id,
+          'studiomc-4b');
+    });
+
+    test('applyChatTemplateKwargs renders the Qwen3 no-think header once', () {
+      const rendered = '<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n';
+      final off = applyChatTemplateKwargs(rendered, {'enable_thinking': false});
+      expect(off, '$rendered$qwen3NoThinkSuffix');
+      expect(applyChatTemplateKwargs(off, {'enable_thinking': false}), off);
+      expect(applyChatTemplateKwargs(rendered, {'enable_thinking': true}),
+          rendered);
+      expect(applyChatTemplateKwargs(rendered, {}), rendered);
+      // An earlier assistant turn containing </think> must not suppress it.
+      const history =
+          '<|im_start|>assistant\n<think>\n\n</think>\n\nA<|im_end|>\n<|im_start|>assistant\n';
+      expect(applyChatTemplateKwargs(history, {'enable_thinking': false}),
+          endsWith('assistant\n$qwen3NoThinkSuffix'));
+    });
+
     test('recommends 0.6B-1B on phones', () {
       final phone = HardwareCapabilities(
         ramBytes: 6 * 1024 * 1024 * 1024,

@@ -4,29 +4,42 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:fcllama/fllama.dart';
-import 'package:fcllama/fllama_type.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// On-device LLM inference for mobile (iOS/Android) using fcllama (llama.cpp).
+import 'mobile_inference/mobile_inference.dart';
+
+/// On-device LLM inference for mobile (iOS/Android).
 ///
 /// Provides the same streaming chat interface as BundledInferenceService
-/// and LocalInferenceService, but runs the model directly on-device
-/// using fcllama — no Python, no Ollama, no server.
+/// and LocalInferenceService, but runs the model directly on-device. No
+/// Python, no Ollama, no server.
 ///
-/// Supports:
-///   - Downloading GGUF models from HuggingFace
-///   - Streaming token generation with GPU acceleration (Metal on iOS)
-///   - Model management (list, delete, switch)
+/// Generation goes through a single [MobileInferenceEngine] (by default
+/// [createMobileInferenceEngine], the fcllama-backed llama.cpp engine on
+/// iOS/Android). On-device RAG and any other engine consumer should reuse
+/// [engine] so one loaded model serves the whole app.
+///
+/// This class owns what the engine does not: downloading GGUFs from
+/// HuggingFace, the on-disk model list, the memory guard, and the
+/// ChangeNotifier state the screens watch.
 class MobileInferenceService extends ChangeNotifier {
-  final FCllama? _llama = FCllama.instance();
-  double? _contextId;
+  MobileInferenceService({
+    MobileInferenceEngine? engine,
+    Future<Directory> Function()? modelsDir,
+  })  : _engine = engine ?? createMobileInferenceEngine(),
+        _modelsDirProvider = modelsDir ?? _defaultModelsDir;
+
+  final MobileInferenceEngine _engine;
+  final Future<Directory> Function() _modelsDirProvider;
   bool _available = false;
   bool _loading = false;
   String? _activeModel;
   List<MobileModel> _downloadedModels = [];
   double _tokPerS = 0.0;
+
+  /// The engine chat, RAG and diagnostics share. Loaded via [loadModel].
+  MobileInferenceEngine get engine => _engine;
 
   // Download state
   double _downloadProgress = 0;
@@ -63,100 +76,114 @@ class MobileInferenceService extends ChangeNotifier {
     return true;
   }
 
+  /// Largest GGUF we will map on a phone. Anything bigger is refused up
+  /// front instead of letting the OS kill the app mid-load.
+  static const int maxModelSizeMb = 1500;
+
   /// Load a specific model for inference.
   Future<bool> loadModel(String filename) async {
-    if (_loading || _llama == null) return false;
+    if (_loading) return false;
     _loading = true;
     notifyListeners();
 
     try {
-      // Release previous context
-      if (_contextId != null) {
-        await _llama.releaseContext(_contextId!);
-        _contextId = null;
-      }
-
-      final modelsDir = await _getModelsDir();
+      final modelsDir = await _modelsDirProvider();
       final modelPath = '${modelsDir.path}/$filename';
 
       final modelFile = File(modelPath);
       if (!modelFile.existsSync()) {
         debugPrint('[mobile-llm] Model file not found: $modelPath');
-        _loading = false;
-        _available = false;
-        notifyListeners();
-        return false;
+        return _failLoad();
       }
 
-      // Guard: reject models too large for available memory
       final fileSizeMb = modelFile.lengthSync() / (1024 * 1024);
-      const maxModelSizeMb = 1500; // ~1.5 GB safe limit for mobile
       if (fileSizeMb > maxModelSizeMb) {
         debugPrint(
             '[mobile-llm] Model too large (${fileSizeMb.toInt()} MB). '
             'Max $maxModelSizeMb MB on mobile.');
         _downloadError =
             'Model too large (${fileSizeMb.toInt()} MB). '
-            'Try a smaller model like Qwen2 0.5B.';
-        _loading = false;
-        _available = false;
-        notifyListeners();
-        return false;
+            'Try a smaller model like Studiomc 0.6B.';
+        return _failLoad();
       }
 
-      // Use GPU layers on real devices; 0 on simulator (no Metal)
+      // Metal on iPhone/iPad; Android stays on CPU until the NNAPI/Vulkan
+      // path is validated on real devices. The simulator has no Metal, but
+      // fcllama falls back to CPU there on its own.
       final gpuLayers = Platform.isIOS ? 99 : 0;
 
-      final result = await _llama.initContext(
-        modelPath,
+      await _engine.load(LoadModelRequest(
+        modelId: filename,
+        modelPath: modelPath,
         nCtx: 1024, // smaller context to reduce memory
         nBatch: 256,
         nGpuLayers: gpuLayers,
-        useMlock: false, // don't lock memory on mobile
-        useMmap: true,
-        emitLoadProgress: true,
-      );
+      ));
 
-      final ctxId = result?['contextId'];
-      if (ctxId == null || (ctxId is num && ctxId <= 0)) {
-        debugPrint('[mobile-llm] Failed to init context for: $filename');
-        _loading = false;
-        _available = false;
-        notifyListeners();
-        return false;
-      }
-
-      _contextId = (ctxId as num).toDouble();
       _activeModel = filename;
       _available = true;
       _loading = false;
-      debugPrint('[mobile-llm] Model loaded: $filename (ctx=$_contextId)');
+      debugPrint('[mobile-llm] Model loaded: $filename');
       notifyListeners();
       return true;
+    } on LlamaCppNotLinkedException catch (e) {
+      debugPrint('[mobile-llm] $e');
+      _downloadError = 'On-device inference is not available in this build.';
+      return _failLoad();
     } catch (e) {
       debugPrint('[mobile-llm] Failed to load model: $e');
-      _available = false;
-      _loading = false;
-      notifyListeners();
-      return false;
+      return _failLoad();
     }
   }
 
+  bool _failLoad() {
+    _loading = false;
+    _available = false;
+    notifyListeners();
+    return false;
+  }
+
   /// Stream a chat completion. Yields token strings as they arrive.
+  ///
+  /// [messages] use the OpenAI shape (`role`, `content` as a string or a
+  /// list of `{type: text}` parts). Errors arrive as a single
+  /// `[Error: ...]` token so the chat UI keeps its existing contract.
   Stream<String> streamChat({
     required List<Map<String, dynamic>> messages,
     String? model,
   }) async* {
-    if (!_available || _contextId == null || _llama == null) {
+    if (!_available || !_engine.isLoaded) {
       yield 'No model loaded. Go to the Models tab to download and activate a model.';
       return;
     }
 
-    // Build the prompt using fcllama's getFormattedChat
-    final roleContents = messages.map((msg) {
+    final turns = toChatTurns(messages);
+    try {
+      yield* _engine.streamTokens(CompletionRequest(
+        messages: turns,
+        maxTokens: 1024,
+        temperature: 0.7,
+        stop: defaultStopSequences,
+      ));
+    } catch (e) {
+      yield '[Error: Inference failed: $e]';
+    } finally {
+      final engine = _engine;
+      if (engine is FcllamaInferenceEngine && engine.lastTokensPerSecond > 0) {
+        _tokPerS = engine.lastTokensPerSecond;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Flatten OpenAI-style messages (string or `{type: text}` parts) into
+  /// plain chat turns. Image parts are dropped: mobile models are text only.
+  @visibleForTesting
+  static List<ChatTurn> toChatTurns(List<Map<String, dynamic>> messages) {
+    return messages.map((msg) {
       final role = msg['role'] as String? ?? 'user';
-      String content;
       final rawContent = msg['content'];
+      String content;
       if (rawContent is List) {
         final textParts = <String>[];
         for (final part in rawContent) {
@@ -168,84 +195,8 @@ class MobileInferenceService extends ChangeNotifier {
       } else {
         content = rawContent as String? ?? '';
       }
-      return RoleContent(role: role, content: content);
+      return ChatTurn(role: role, content: content);
     }).toList();
-
-    // Try to get a formatted prompt from the model's chat template
-    String prompt;
-    try {
-      final formatted =
-          await _llama.getFormattedChat(_contextId!, messages: roleContents);
-      prompt = formatted ?? _buildChatMLPrompt(roleContents);
-    } catch (_) {
-      prompt = _buildChatMLPrompt(roleContents);
-    }
-
-    int totalTokens = 0;
-    final stopwatch = Stopwatch()..start();
-    final completer = Completer<void>();
-    final tokenController = StreamController<String>();
-
-    // Listen for streaming tokens
-    StreamSubscription<Map<Object?, dynamic>>? sub;
-    sub = _llama.onTokenStream?.listen((data) {
-      final fn = data['function'] as String?;
-      if (fn == 'completion') {
-        final result = data['result'];
-        if (result is Map) {
-          final token = result['token'] as String?;
-          if (token != null && token.isNotEmpty) {
-            totalTokens++;
-            tokenController.add(token);
-          }
-        }
-      }
-    }, onDone: () {
-      if (!completer.isCompleted) completer.complete();
-    }, onError: (e) {
-      if (!completer.isCompleted) completer.complete();
-    });
-
-    // Start completion
-    try {
-      _llama.completion(
-        _contextId!,
-        prompt: prompt,
-        temperature: 0.7,
-        topK: 40,
-        topP: 0.9,
-        nPredict: 1024,
-        penaltyRepeat: 1.1,
-        stop: ['<|im_end|>', '<|eot_id|>', '</s>'],
-        emitRealtimeCompletion: true,
-      ).then((_) {
-        if (!completer.isCompleted) completer.complete();
-      }).catchError((e) {
-        if (!completer.isCompleted) completer.complete();
-      });
-
-      // Yield tokens as they arrive
-      await for (final token in tokenController.stream) {
-        yield token;
-        if (completer.isCompleted) break;
-      }
-
-      // Wait for completion to finish
-      await completer.future.timeout(
-        const Duration(minutes: 5),
-        onTimeout: () {},
-      );
-    } catch (e) {
-      yield '[Error: Inference failed — $e]';
-    } finally {
-      await sub?.cancel();
-      await tokenController.close();
-      stopwatch.stop();
-      if (stopwatch.elapsedMilliseconds > 0 && totalTokens > 0) {
-        _tokPerS = totalTokens / (stopwatch.elapsedMilliseconds / 1000.0);
-        notifyListeners();
-      }
-    }
   }
 
   /// Non-streaming completion.
@@ -259,18 +210,6 @@ class MobileInferenceService extends ChangeNotifier {
       buffer.write(token);
     }
     return buffer.isEmpty ? null : buffer.toString();
-  }
-
-  /// Build ChatML prompt as fallback.
-  String _buildChatMLPrompt(List<RoleContent> messages) {
-    final buf = StringBuffer();
-    for (final msg in messages) {
-      buf.writeln('<|im_start|>${msg.role}');
-      buf.writeln(msg.content);
-      buf.writeln('<|im_end|>');
-    }
-    buf.writeln('<|im_start|>assistant');
-    return buf.toString();
   }
 
   // ── Model Download ──
@@ -385,10 +324,7 @@ class MobileInferenceService extends ChangeNotifier {
       }
 
       if (_activeModel == filename) {
-        if (_contextId != null) {
-          _llama?.releaseContext(_contextId!);
-        }
-        _contextId = null;
+        await _unloadQuietly();
         _activeModel = null;
         _available = false;
       }
@@ -427,13 +363,23 @@ class MobileInferenceService extends ChangeNotifier {
     }
   }
 
-  Future<Directory> _getModelsDir() async {
+  Future<Directory> _getModelsDir() => _modelsDirProvider();
+
+  static Future<Directory> _defaultModelsDir() async {
     final appDir = await getApplicationSupportDirectory();
     final modelsDir = Directory('${appDir.path}/models');
     if (!await modelsDir.exists()) {
       await modelsDir.create(recursive: true);
     }
     return modelsDir;
+  }
+
+  Future<void> _unloadQuietly() async {
+    try {
+      await _engine.unload();
+    } catch (e) {
+      debugPrint('[mobile-llm] Unload failed: $e');
+    }
   }
 
   /// Friendly display name from GGUF filename.
@@ -455,8 +401,9 @@ class MobileInferenceService extends ChangeNotifier {
 
   @override
   void dispose() {
-    if (_contextId != null) {
-      _llama?.releaseContext(_contextId!);
+    if (_engine.isLoaded) {
+      // Fire and forget: dispose is synchronous, the release is not.
+      unawaited(_unloadQuietly());
     }
     super.dispose();
   }

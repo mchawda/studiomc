@@ -14,6 +14,9 @@ class MobileModelSpec {
   final String filenameHint;
   final String? desktopCatalogId;
 
+  /// Mirrors `chat_template_kwargs` on the desktop registry entry.
+  final Map<String, Object?> chatTemplateKwargs;
+
   const MobileModelSpec({
     required this.id,
     required this.displayName,
@@ -22,6 +25,7 @@ class MobileModelSpec {
     required this.minRamBytes,
     required this.filenameHint,
     this.desktopCatalogId,
+    this.chatTemplateKwargs = const {},
   });
 }
 
@@ -42,6 +46,9 @@ class MobileModelCatalog {
     minRamBytes: 3 * _gb,
     filenameHint: 'studiomc-0.6b-q4_k_m.gguf',
     desktopCatalogId: 'studiomc-0.6b',
+    // Qwen3-0.6B is a hybrid thinking model; without this it opens every
+    // answer with a <think> block the phone UI has no place to show.
+    chatTemplateKwargs: {'enable_thinking': false},
   );
 
   static const desktop1b = MobileModelSpec(
@@ -119,6 +126,37 @@ class MobileModelCatalog {
   };
 
   static MobileModelSpec? byId(String id) => _byId[id];
+
+  /// Match a downloaded GGUF back to a spec by its file name (case
+  /// insensitive). The models screen stores files under the catalog's
+  /// [MobileModelSpec.filenameHint], so this is how a bare filename from
+  /// `MobileInferenceService` regains its catalog identity.
+  static MobileModelSpec? byFilename(String pathOrFilename) {
+    final name = p.basename(pathOrFilename).toLowerCase();
+    for (final spec in all) {
+      if (spec.filenameHint.toLowerCase() == name) return spec;
+    }
+    return null;
+  }
+
+  /// Chat template kwargs a model needs, resolved from its id, then its
+  /// file name, then the GGUF family. Every Qwen3 build except the
+  /// `-2507` instruct releases is a hybrid thinking model, so an
+  /// unlisted Qwen3 GGUF still gets `enable_thinking: false`.
+  static Map<String, Object?> chatTemplateKwargsFor({
+    String? modelId,
+    String? modelPath,
+  }) {
+    final spec = (modelId == null ? null : byId(modelId)) ??
+        (modelId == null ? null : byFilename(modelId)) ??
+        (modelPath == null ? null : byFilename(modelPath));
+    if (spec != null) return spec.chatTemplateKwargs;
+    final name = p.basename(modelPath ?? modelId ?? '').toLowerCase();
+    if (name.contains('qwen3') && !name.contains('2507')) {
+      return const {'enable_thinking': false};
+    }
+    return const {};
+  }
 
   static String modelPath({
     required String appSupportDir,

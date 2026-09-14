@@ -48,15 +48,27 @@ class LoadModelRequest {
   final String modelId;
   final String modelPath;
   final int nCtx;
+  final int nBatch;
   final int nGpuLayers;
+
+  /// Per-model chat template kwargs (mirrors `chat_template_kwargs` in
+  /// `services/model_manager/registry.py`). Merged under any kwargs a
+  /// [CompletionRequest] carries; the catalog supplies defaults for known
+  /// ids so callers rarely need to set this.
+  final Map<String, Object?> chatTemplateKwargs;
 
   const LoadModelRequest({
     required this.modelId,
     required this.modelPath,
     this.nCtx = 1024,
+    this.nBatch = 256,
     this.nGpuLayers = 99,
+    this.chatTemplateKwargs = const {},
   });
 }
+
+/// Stop strings shared by every ChatML / Llama 3 / Mistral style GGUF we ship.
+const List<String> defaultStopSequences = ['<|im_end|>', '<|eot_id|>', '</s>'];
 
 class CompletionRequest {
   final String? prompt;
@@ -65,26 +77,61 @@ class CompletionRequest {
   final double temperature;
   final List<String> stop;
 
+  /// Chat template kwargs for this request. `enable_thinking: false`
+  /// turns a Qwen3 hybrid model into a plain instruct model by emitting an
+  /// empty `<think></think>` block, exactly as the Jinja template does.
+  final Map<String, Object?> chatTemplateKwargs;
+
   const CompletionRequest({
     this.prompt,
     this.messages = const [],
     this.maxTokens = 256,
     this.temperature = 0.7,
     this.stop = const [],
+    this.chatTemplateKwargs = const {},
   });
+
+  /// True when the engine must build a prompt from [messages].
+  bool get isChat => (prompt == null || prompt!.isEmpty) && messages.isNotEmpty;
 
   String get resolvedPrompt {
     if (prompt != null && prompt!.isNotEmpty) return prompt!;
     if (messages.isEmpty) return '';
-    final buf = StringBuffer();
-    for (final turn in messages) {
-      buf.writeln('<|im_start|>${turn.role}');
-      buf.writeln(turn.content);
-      buf.writeln('<|im_end|>');
-    }
-    buf.writeln('<|im_start|>assistant');
-    return buf.toString();
+    return chatMlPrompt(messages);
   }
+}
+
+/// ChatML rendering used when the model ships no template llama.cpp can
+/// apply. Ends with the open assistant header so generation continues it.
+String chatMlPrompt(List<ChatTurn> messages) {
+  final buf = StringBuffer();
+  for (final turn in messages) {
+    buf.writeln('<|im_start|>${turn.role}');
+    buf.writeln(turn.content);
+    buf.writeln('<|im_end|>');
+  }
+  buf.writeln('<|im_start|>assistant');
+  return buf.toString();
+}
+
+/// Empty reasoning block Qwen3's template emits for `enable_thinking=false`.
+const String qwen3NoThinkSuffix = '<think>\n\n</think>\n\n';
+
+/// Apply the chat template kwargs llama.cpp's legacy
+/// `llama_chat_apply_template` cannot: it is a fixed template matcher with
+/// no Jinja variables, so `enable_thinking=false` must be reproduced by
+/// hand on the rendered assistant header. Only kwargs with a known
+/// rendering are applied; unknown keys are ignored on purpose.
+String applyChatTemplateKwargs(
+  String renderedPrompt,
+  Map<String, Object?> kwargs,
+) {
+  var prompt = renderedPrompt;
+  if (kwargs['enable_thinking'] == false &&
+      !prompt.trimRight().endsWith('</think>')) {
+    prompt = '${prompt.trimRight()}\n$qwen3NoThinkSuffix';
+  }
+  return prompt;
 }
 
 class CompletionResult {

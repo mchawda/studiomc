@@ -9,10 +9,11 @@ import 'engine.dart';
 ///
 /// Native iOS (`ios/Runner/AppDelegate.swift`) and Android
 /// (`MobileInferenceHost.kt`) implement this channel. Until llama.cpp is
-/// linked, `probe` is live and every other method fails with the typed
-/// `llama_cpp_not_linked` error. `test/mobile_inference/
-/// channel_contract_test.dart` reads both native sources and asserts they
-/// match these constants.
+/// linked into the host, `probe` is live and every other method fails with
+/// the typed `llama_cpp_not_linked` error. Generation on a phone today runs
+/// through `FcllamaInferenceEngine`, which only asks this host for `probe`
+/// and `embed`. `test/mobile_inference/channel_contract_test.dart` reads
+/// both native sources and asserts they match these constants.
 class MobileInferenceContract {
   static const methodChannel = 'studiomc.mobile_inference';
   static const tokenEventChannel = 'studiomc.mobile_inference/tokens';
