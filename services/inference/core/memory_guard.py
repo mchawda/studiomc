@@ -16,13 +16,18 @@ project dependency).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable, Union
+
+UnloadCallback = Union[
+    Callable[[], None],
+    Callable[[], Awaitable[None]],
+]
 
 import psutil
 
@@ -377,7 +382,7 @@ class MemoryGuard:
 
     def start_monitor(
         self,
-        unload_callback: Callable[[], None] | None = None,
+        unload_callback: UnloadCallback | None = None,
     ) -> None:
         """Start background memory monitoring.
 
@@ -456,7 +461,12 @@ class MemoryGuard:
                 "Emergency unloading LRU model '%s' to reclaim memory", lru_model
             )
             try:
-                self._unload_callback()
+                # Support both sync and async callbacks. Async callbacks
+                # are awaited inline so the model is fully unloaded before
+                # we report the model as gone.
+                result = self._unload_callback()
+                if inspect.isawaitable(result):
+                    await result
                 self.unregister_model(lru_model)
             except Exception as e:
                 logger.error("Emergency unload failed: %s", e)

@@ -12,7 +12,6 @@ Every tool invocation goes through the sandbox which:
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -20,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from common.config import DOCS_DIR
-
 
 # ── Budget defaults (from performance-engineering.md) ──
 
@@ -39,7 +37,7 @@ ALLOWED_TOOLS: frozenset[str] = frozenset(
 )
 
 
-class BudgetExceeded(Exception):
+class BudgetExceededError(Exception):
     """Raised when a sandbox budget limit is hit."""
 
     def __init__(self, reason: str) -> None:
@@ -47,12 +45,19 @@ class BudgetExceeded(Exception):
         super().__init__(reason)
 
 
-class SecurityViolation(Exception):
+class SecurityViolationError(Exception):
     """Raised on disallowed operations (path traversal, etc.)."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+# ── Backwards-compat aliases ──────────────────────────────────────────
+# Older code (and external callers in the Flutter trace panel mapping)
+# imported the bare names. Keep them resolvable so renames don't ripple.
+BudgetExceeded = BudgetExceededError
+SecurityViolation = SecurityViolationError
 
 
 @dataclass

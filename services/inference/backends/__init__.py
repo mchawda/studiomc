@@ -6,8 +6,10 @@
 Provides a unified interface for multiple LLM inference backends:
     - Ollama       (local, REST API at localhost:11434)
     - LM Studio    (local, OpenAI-compatible at localhost:1234)
-    - LlamaCpp     (built-in, runs GGUF models via llama-cpp-python)
-    - Studiomc     (built-in SpliceLLM engine, safetensors models)
+    - LlamaServer  (built-in, runs GGUF models via the llama-server sidecar)
+    - LlamaCpp     (legacy, requires the optional Pro pack — kept for back-compat)
+    - Studiomc     (built-in SpliceLLM engine, safetensors models — Pro pack only)
+    - MLX          (Apple Silicon GPU runtime — Pro pack only)
     - Frontier     (cloud, any OpenAI-compatible API)
 
 Each backend implements the :class:`BackendClient` abstract base class.
@@ -29,7 +31,7 @@ if _SERVICES_DIR not in sys.path:
 
 import os
 
-from inference.engine import GenerationMetrics
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.backends")
 
@@ -125,12 +127,13 @@ class BackendClient(abc.ABC):
 # ── Re-exports for convenient imports ─────────────────────────────────
 # Usage: from inference.backends import OllamaClient, LMStudioClient, ...
 
-from inference.backends.ollama import OllamaClient
-from inference.backends.lmstudio import LMStudioClient
-from inference.backends.studiomc import StudiomcClient
 from inference.backends.frontier import FrontierClient
+from inference.backends.llama_server import LlamaServerClient
 from inference.backends.llamacpp import LlamaCppClient
+from inference.backends.lmstudio import LMStudioClient
 from inference.backends.mlx_backend import MLXClient
+from inference.backends.ollama import OllamaClient
+from inference.backends.studiomc import StudiomcClient
 
 __all__ = [
     # Data classes
@@ -146,6 +149,7 @@ __all__ = [
     "OllamaClient",
     "LMStudioClient",
     "StudiomcClient",
+    "LlamaServerClient",
     "LlamaCppClient",
     "FrontierClient",
     "MLXClient",

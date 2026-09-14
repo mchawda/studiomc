@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — bundle all Studiomc Python services into one directory.
+"""PyInstaller spec — bundle all Studiomc Core Python services into one directory.
 
 Usage:
     cd services
@@ -9,6 +9,18 @@ The resulting ``dist/studiomc_services/`` directory contains a single
 executable (``studiomc_services``) plus all shared libraries and data.
 The Flutter app copies this directory into its platform-specific resources
 folder at build time.
+
+Core vs Pro split (see ``services/SPLIT_BUNDLE.md``):
+    * This spec ships ONLY the Core bundle: FastAPI services + the
+      ``llama-server`` sidecar. No PyTorch, transformers, peft, accelerate,
+      sentence-transformers, mlx, or llama_cpp_python — those live in the
+      optional Pro pack tarball that the supervisor downloads into
+      ``~/.studiomc/pro-env`` on demand.
+    * The training service registers its routes lazily and any code path
+      that needs the heavy ML stack raises ``ProPackRequiredError``,
+      which is converted to HTTP 412 by ``common/fastapi_pro_pack.py``.
+    * Heavy libs are listed in the ``excludes`` block below so PyInstaller
+      will fail loud if a Core import accidentally references them.
 """
 
 import platform
@@ -46,10 +58,27 @@ hidden_imports = [
     "clara.app",
     "lre.app",
     "orchestrator.app",
+    "data_recipes.app",
+    "data_recipes.routes",
+    "data_recipes.recipe_engine",
+    "mcp.app",
+    "mcp.routes",
+    "mcp.broker",
+    "mcp.client",
+    "memory.app",
+    "memory.routes",
+    "memory.store",
+    "memory.extractor",
     # Service internals that routes/app files may lazy-import
     "inference.routes",
     "inference.streaming",
-    "inference.backends.llamacpp",
+    "inference.engine_types",
+    "inference.llama_server_sidecar",
+    "inference.backends.llama_server",
+    # NOTE: inference.backends.llamacpp is intentionally NOT listed.
+    # It depends on llama_cpp_python (Pro pack only). The router skips it
+    # at runtime when the import fails, and the Core bundle should not
+    # try to drag llama_cpp into the frozen archive.
     "model_manager.routes",
     "model_manager.autopilot",
     "documents.routes",
@@ -68,7 +97,10 @@ hidden_imports = [
     "common.hardware",
     "common.schemas",
     "common.database",
-    # Heavy libraries that sometimes need nudging
+    "common.pro_pack",
+    "common.pro_pack_installer",
+    "common.fastapi_pro_pack",
+    # Standard libraries that sometimes need nudging
     "numpy",
     "tiktoken",
     "tiktoken_ext",
@@ -76,23 +108,14 @@ hidden_imports = [
     "aiosqlite",
     "httpx",
     "platformdirs",
-    # llama.cpp GGUF inference engine
-    "llama_cpp",
-    "llama_cpp.llama",
-    "llama_cpp.llama_cpp",
+    "psutil",
     # File I/O
     "aiofiles",
-    # PyTorch submodules needed to avoid circular imports in frozen bundles
-    "torch.autograd",
-    "torch.autograd.function",
-    "torch.autograd.variable",
-    "torch.nn",
-    "torch.nn.functional",
-    "torch.nested",
-    "torch.nested._internal",
-    "torch.nested._internal.nested_tensor",
-    "torch.utils",
-    "torch.utils.data",
+    # NOTE: torch / transformers / peft / accelerate / sentence_transformers
+    # / mlx / llama_cpp are NOT listed here. They live in the Pro pack venv
+    # (~/.studiomc/pro-env) and are imported by the training service via
+    # the Pro pack's separate Python interpreter, NOT inside this frozen
+    # bundle. See ``excludes`` below for the matching guardrail.
 ]
 
 # ── Data files ─────────────────────────────────────────────────────────────
@@ -108,8 +131,17 @@ datas = [
     ("orchestrator", "orchestrator"),
     ("supervisor", "supervisor"),
     ("training", "training"),
+    ("data_recipes", "data_recipes"),
+    ("mcp", "mcp"),
+    ("memory", "memory"),
     ("common", "common"),
 ]
+
+# The llama-server sidecar binary lives next to the frozen executable
+# (Contents/Resources/bin/llama-server in the macOS .app). Ship it as
+# data so the bundle is self-contained.
+if (SERVICES_ROOT / "bin").is_dir():
+    datas.append(("bin", "bin"))
 
 # ── Analysis ───────────────────────────────────────────────────────────────
 a = Analysis(
@@ -130,6 +162,27 @@ a = Analysis(
         "setuptools",
         "pip",
         "wheel",
+        # ── Pro pack only — must NOT leak into the Core bundle ────────────
+        # These are excluded so that PyInstaller's static analysis emits a
+        # build error if any Core module accidentally imports them at
+        # module load time. The Pro pack ships its own venv with these
+        # libraries; the supervisor invokes them via a subprocess.
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "transformers",
+        "peft",
+        "accelerate",
+        "sentence_transformers",
+        "mlx",
+        "mlx.core",
+        "mlx.nn",
+        "mlx_lm",
+        "llama_cpp",
+        "safetensors",
+        "datasets",
+        "huggingface_hub",
+        "tokenizers",
     ],
     noarchive=False,
     optimize=1,

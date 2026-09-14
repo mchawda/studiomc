@@ -32,8 +32,6 @@ from typing import Any, Callable
 import numpy as np
 
 from common.config import ADAPTERS_DIR, MODELS_DIR
-from common.database import Database
-from training.tokenizer_utils import count_tokens, format_training_samples, TrainingSample
 
 logger = logging.getLogger("training.distiller")
 
@@ -53,14 +51,16 @@ except ImportError:
     torch = None  # type: ignore[assignment]
 
 try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+    # AutoConfig is unused here but imported as a probe — its absence
+    # signals an incomplete transformers install.
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer  # noqa: F401
 
     _HAS_TRANSFORMERS = True
 except ImportError:
     pass
 
 try:
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, TaskType, get_peft_model
 
     _HAS_PEFT = True
 except ImportError:
@@ -508,8 +508,6 @@ class KnowledgeDistiller:
             optimizer = torch.optim.AdamW(student.parameters(), lr=learning_rate, weight_decay=0.01)
 
             step_losses: list[float] = []
-            kl_losses: list[float] = []
-            ce_losses: list[float] = []
             total_steps = 0
 
             for epoch in range(epochs):

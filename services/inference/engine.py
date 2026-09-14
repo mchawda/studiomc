@@ -6,10 +6,18 @@
 Provides the public API used by the router and backends:
     - load_model / unload_model
     - generate_stream / generate
-    - GenerationMetrics, EngineState, PROFILE_PARAMS
 
-No mock mode. No echo mode. If PyTorch is not installed or no model is
-loaded, clear errors are raised.
+The pure data types (``GenerationMetrics``, ``EngineState``,
+``PROFILE_PARAMS``) live in :mod:`inference.engine_types` so that
+lightweight backends (Ollama, LM Studio, Frontier, llama-server) can
+import them without dragging in the heavy Pro pack (PyTorch + the
+``OutOfCoreEngine``).
+
+The Pro pack — ``torch`` + ``inference.core.out_of_core`` — is imported
+**lazily inside :meth:`InferenceEngine.load_model`**. Constructing an
+``InferenceEngine`` is free; only loading a SpliceLLM model triggers
+the Pro pack import. If the Pro pack is not installed, ``load_model``
+raises a clear error and the router falls back to other backends.
 """
 
 from __future__ import annotations
@@ -17,71 +25,48 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+
+# Re-export the pure types so existing call sites that do
+# ``from inference.engine import GenerationMetrics`` keep working until
+# they migrate to ``inference.engine_types``.
+from inference.engine_types import (
+    PROFILE_PARAMS,
+    EngineState,
+    GenerationMetrics,
+)
 
 logger = logging.getLogger("inference.engine")
 
-# ── Verify PyTorch is available ──────────────────────────────────────
 
-try:
-    import torch  # noqa: F401
-except ImportError:
-    raise ImportError(
-        "PyTorch is required for inference. Install with: pip install torch"
-    )
+def _load_pro_pack() -> Any:
+    """Import the SpliceLLM dependencies on demand.
 
-from inference.core.out_of_core import OutOfCoreEngine
+    Raises a friendly error if the Pro pack (PyTorch + transformers +
+    safetensors + accelerate) is not installed. This is the **only**
+    place in the inference service that triggers a torch import — keep
+    it that way to preserve the small Core bundle.
+    """
+    try:
+        import torch  # noqa: F401
 
-
-# ── Data classes ──────────────────────────────────────────────────────
-
-@dataclass
-class GenerationMetrics:
-    """Metrics collected during a single generation."""
-    ttft_ms: int = 0          # time to first token
-    tok_per_s: float = 0.0    # tokens per second
-    total_tokens: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    elapsed_ms: int = 0
-
-
-@dataclass
-class EngineState:
-    """Tracks current engine state."""
-    active_model_id: str | None = None
-    active_model_path: str | None = None
-    loaded: bool = False
-    generating: bool = False
-
-
-# ── Profile presets ───────────────────────────────────────────────────
-
-PROFILE_PARAMS = {
-    "fast": {
-        "temperature": 0.5,
-        "max_new_tokens": 256,
-        "repetition_penalty": 1.1,
-        "top_p": 0.85,
-    },
-    "balanced": {
-        "temperature": 0.7,
-        "max_new_tokens": 1024,
-        "repetition_penalty": 1.15,
-        "top_p": 0.9,
-    },
-    "quality": {
-        "temperature": 0.8,
-        "max_new_tokens": 2048,
-        "repetition_penalty": 1.2,
-        "top_p": 0.95,
-    },
-}
+        from inference.core.out_of_core import OutOfCoreEngine
+    except ImportError as exc:  # pragma: no cover — pro pack absent
+        raise RuntimeError(
+            "The SpliceLLM engine requires the Studiomc Pro pack "
+            "(PyTorch + transformers). Install it from the Training "
+            "screen or via `pip install studiomc-services[pro]`."
+        ) from exc
+    return OutOfCoreEngine
 
 
 class InferenceEngine:
     """Wraps the OutOfCoreEngine for local model inference.
+
+    Constructing an instance is free — the heavy ML stack is only
+    imported the first time :meth:`load_model` is called. This keeps
+    the Core bundle slim while preserving the existing public API for
+    call sites that already hold a long-lived engine reference.
 
     Usage::
 
@@ -93,7 +78,9 @@ class InferenceEngine:
 
     def __init__(self) -> None:
         self.state = EngineState()
-        self._engine = OutOfCoreEngine()
+        # Lazily created by load_model — kept None until the Pro pack
+        # is verified, so importing this module never touches torch.
+        self._engine: Any = None
         self._lock = asyncio.Lock()
 
     @property
@@ -107,13 +94,22 @@ class InferenceEngine:
     # ── Model lifecycle ───────────────────────────────────────────────
 
     async def load_model(self, model_id: str, model_path: str) -> None:
-        """Load a model for out-of-core inference. Unloads previous model first."""
+        """Load a model for out-of-core inference. Unloads previous model first.
+
+        First call lazily imports the Pro pack and constructs the
+        underlying ``OutOfCoreEngine``. Subsequent calls reuse it.
+        """
         async with self._lock:
             if self.state.active_model_id == model_id and self.state.loaded:
                 logger.info("Model %s already loaded", model_id)
                 return
 
             await self._unload_internal()
+
+            # Lazy Pro-pack import — happens exactly once per process.
+            if self._engine is None:
+                out_of_core_cls = _load_pro_pack()
+                self._engine = out_of_core_cls()
 
             logger.info("Loading model %s from %s", model_id, model_path)
             await self._engine.load_model(model_path)
@@ -129,7 +125,7 @@ class InferenceEngine:
             await self._unload_internal()
 
     async def _unload_internal(self) -> None:
-        if self.state.loaded:
+        if self.state.loaded and self._engine is not None:
             logger.info("Unloading model %s", self.state.active_model_id)
             await self._engine.unload_model()
             self.state.active_model_id = None

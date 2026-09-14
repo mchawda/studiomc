@@ -28,14 +28,17 @@ logger = logging.getLogger("inference.core.adapter_loader")
 
 _HAS_PEFT = False
 try:
-    from peft import PeftModel, PeftConfig  # type: ignore[import-untyped]
+    # Probe for the Pro-pack ML stack at module load. The imports are not
+    # used directly here (they're re-imported lazily inside methods that
+    # need them) — they exist solely to set the ``_HAS_PEFT`` flag.
+    from peft import PeftConfig, PeftModel  # type: ignore[import-untyped]  # noqa: F401
     _HAS_PEFT = True
 except ImportError:
     logger.info("peft not installed — adapter loading will be unavailable")
 
 _HAS_TORCH = False
 try:
-    import torch
+    import torch  # noqa: F401  (capability probe; lazy-imported in methods)
     _HAS_TORCH = True
 except ImportError:
     pass

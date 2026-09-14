@@ -594,10 +594,12 @@ class _ModelBrowserPanelState extends State<_ModelBrowserPanel> {
     });
 
     try {
+      if (!mounted) return;
       final modelManager = context.read<ModelManagerService>();
       await modelManager.addModel(sourceRef: modelId);
 
       // Set as active model
+      if (!mounted) return;
       final settings = context.read<SettingsService>();
       settings.activeModelId = modelId;
 
@@ -620,13 +622,23 @@ class _ModelBrowserPanelState extends State<_ModelBrowserPanel> {
     final theme = Theme.of(context);
     final query = _searchController.text.toLowerCase();
 
+    // Merge starter models with already-installed user models, deduping
+    // by id and putting installed models first so users see "their" models
+    // before the recommended starters.
+    final installedIds =
+        _availableModels.map((m) => m['id'] as String? ?? '').toSet();
+    final starterFiltered = _starterModels
+        .where((m) => !installedIds.contains(m['id']))
+        .toList();
+    final allModels = [..._availableModels, ...starterFiltered];
+
     final filteredModels = query.isEmpty
-        ? _starterModels
-        : _starterModels
+        ? allModels
+        : allModels
             .where((m) =>
-                (m['name'] as String).toLowerCase().contains(query) ||
-                (m['org'] as String).toLowerCase().contains(query) ||
-                (m['id'] as String).toLowerCase().contains(query))
+                ((m['name'] as String?) ?? '').toLowerCase().contains(query) ||
+                ((m['org'] as String?) ?? '').toLowerCase().contains(query) ||
+                ((m['id'] as String?) ?? '').toLowerCase().contains(query))
             .toList();
 
     return Column(
@@ -943,6 +955,7 @@ class _OllamaModelListState extends State<_OllamaModelList> {
               setState(() => _pullProgress = completed / total);
             }
             if (json['status'] == 'success') {
+              if (!mounted) break;
               // Refresh the local service
               final local = context.read<LocalInferenceService>();
               await local.init(preferredModel: tag);

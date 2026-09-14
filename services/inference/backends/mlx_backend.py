@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import gc
 import logging
-import os
 import platform
 import sys
 import time
@@ -31,8 +30,8 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
-from inference.engine import GenerationMetrics
 from inference.backends import BackendClient, BackendInfo, UnifiedModel
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.backends.mlx")
 

@@ -34,6 +34,9 @@ TOOL_TABLE_EXTRACT = "table_extract"
 TOOL_CLARA_QUERY = "clara_query"
 TOOL_CLARA_ANSWER = "clara_answer"
 TOOL_INFERENCE = "inference"
+# Generic dispatch wrapper for any tool exposed by a registered MCP server.
+# ``params`` must contain ``server_id``, ``tool_name``, and ``arguments``.
+TOOL_MCP = "mcp"
 
 
 @dataclass

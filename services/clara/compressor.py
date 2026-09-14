@@ -3,27 +3,36 @@
 
 """CLaRa Compressor — creates latent vectors from document chunks.
 
-Phase 1 strategy:
-  1. Try sentence-transformers (high-quality embeddings).
-  2. Fall back to TF-IDF bag-of-words if sentence-transformers is unavailable.
+Embedding strategy (first available wins, decided per-call):
+  1. **Pro pack present** — ``sentence-transformers`` neural embeddings
+     (best quality, runs locally, ~120 MB additional download via the
+     Pro pack). 384-dim ``all-MiniLM-L6-v2``.
+  2. **Core only, llama-server has a model loaded** — the built-in
+     ``llama-server`` sidecar's OpenAI-compatible ``/v1/embeddings``
+     endpoint. Quality scales with the user's chosen GGUF; no extra
+     download required.
+  3. **No model loaded yet** — pure-Python TF-IDF hashing fallback (512
+     dim). Lets us index documents during onboarding *before* the user
+     has selected a model. Re-indexing happens automatically once a
+     model is available.
 
-Phase 2 enhancement:
-  3. LatentCompressor — PCA / random-projection dimensionality reduction
-     that achieves 32–64× compression on the embedding vectors while
-     preserving retrieval quality.  Compressed representations are stored
-     alongside standard chunks for fast search in latent space.
+LatentCompressor (PCA / random projection) sits on top of whichever
+backend produced the vectors and gives 32–64× compression for fast
+search.
 
-Vectors are persisted to the `clara_vectors` table (as numpy byte blobs)
-and aggregated into per-collection index files at INDEXES_DIR/<cid>/clara_index.npz.
+Vectors are persisted to ``clara_vectors`` (numpy byte blobs) and
+aggregated into per-collection index files at
+``INDEXES_DIR/<cid>/clara_index.npz``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +45,8 @@ logger = logging.getLogger("clara.compressor")
 
 # ── Backend detection ────────────────────────────────────────────
 
+# Tier 1: sentence-transformers (Pro pack). Probed eagerly so we can
+# report the active backend in /health and the COMPRESSOR_VERSION tag.
 _USE_SBERT = False
 _sbert_model = None
 
@@ -43,11 +54,22 @@ try:
     from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 
     _USE_SBERT = True
-    logger.info("sentence-transformers available — using neural embeddings")
+    logger.info("sentence-transformers available — neural embeddings (Pro pack)")
 except ImportError:
-    logger.info("sentence-transformers not installed — using TF-IDF fallback")
+    logger.info(
+        "sentence-transformers not installed — will use llama-server "
+        "/embedding when a model is loaded, else TF-IDF hashing fallback"
+    )
 
-COMPRESSOR_VERSION = "clara-v0.1-sbert" if _USE_SBERT else "clara-v0.1-tfidf"
+
+def _initial_version_tag() -> str:
+    """Best-guess backend tag at import time (refined per-call later)."""
+    if _USE_SBERT:
+        return "clara-v0.2-sbert"
+    return "clara-v0.2-tfidf"
+
+
+COMPRESSOR_VERSION = _initial_version_tag()
 
 # ── TF-IDF fallback ────────────────────────────────────────────────
 
@@ -88,7 +110,7 @@ _tfidf = _TfidfVectorizer()
 
 
 def _get_sbert_model() -> SentenceTransformer:  # type: ignore[name-defined]
-    """Lazy-load the sentence-transformer model."""
+    """Lazy-load the sentence-transformer model (Pro pack only)."""
     global _sbert_model
     if _sbert_model is None:
         _sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -96,15 +118,116 @@ def _get_sbert_model() -> SentenceTransformer:  # type: ignore[name-defined]
     return _sbert_model
 
 
+def _get_llama_server_dims() -> int | None:
+    """Return the embedding dimensionality reported by the running sidecar.
+
+    ``None`` if the sidecar is not running (we then fall back to TF-IDF
+    and persist a separate ``COMPRESSOR_VERSION`` so re-indexing later
+    knows the previous vectors are stale).
+    """
+    try:
+        from inference.llama_server_sidecar import get_sidecar_sync
+    except ImportError:
+        return None
+
+    sidecar = get_sidecar_sync()
+    if not sidecar.is_running:
+        return None
+
+    # llama-server exposes the model's hidden dimension via the loaded
+    # GGUF; we probe with a single-token embedding and cache the size.
+    global _llama_dims_cache
+    if _llama_dims_cache is not None:
+        return _llama_dims_cache
+    try:
+        vecs = _llama_embed_sync(["x"])
+        if vecs and vecs[0]:
+            _llama_dims_cache = len(vecs[0])
+            return _llama_dims_cache
+    except Exception:
+        return None
+    return None
+
+
+_llama_dims_cache: int | None = None
+
+
 def get_dims() -> int:
-    """Return the dimensionality of vectors produced by the active backend."""
+    """Return the dimensionality of vectors produced by the active backend.
+
+    Order: SBERT (384) → llama-server (model-specific, e.g. 4096) → TF-IDF (512).
+    """
     if _USE_SBERT:
         return _get_sbert_model().get_sentence_embedding_dimension()  # 384
+
+    llama_dims = _get_llama_server_dims()
+    if llama_dims:
+        return llama_dims
+
     return _TFIDF_DIM
+
+
+def active_backend() -> str:
+    """Return a stable identifier for the embedding backend currently in use.
+
+    Stored in ``COMPRESSOR_VERSION``-style metadata so we can detect
+    "the embeddings on disk were produced by a different backend, please
+    re-index" cases when the user installs the Pro pack later.
+    """
+    if _USE_SBERT:
+        return "sbert-minilm-l6-v2"
+    if _get_llama_server_dims():
+        return "llama-server-embed"
+    return "tfidf-hash"
+
+
+# ── llama-server bridge ─────────────────────────────────────────
+
+def _llama_embed_sync(texts: list[str]) -> list[list[float]] | None:
+    """Synchronous wrapper around the async sidecar embed call.
+
+    Used from sync code paths inside ``encode_texts``. Returns ``None``
+    if the sidecar isn't running or returns an error — the caller then
+    falls back to TF-IDF.
+    """
+    try:
+        from inference.backends.llama_server import LlamaServerClient
+        from inference.llama_server_sidecar import LlamaServerError
+    except ImportError:
+        return None
+
+    client = LlamaServerClient()
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're in an event loop already — schedule on a fresh thread
+            # so we don't deadlock blocking on the same loop. Cheap because
+            # the actual HTTP call is short.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(asyncio.run, client.embed(texts))
+                return fut.result(timeout=120)
+        return asyncio.run(client.embed(texts))
+    except LlamaServerError as exc:
+        logger.debug("llama-server embedding unavailable: %s", exc)
+        return None
+    except Exception:
+        logger.exception("llama-server embedding failed")
+        return None
 
 
 def encode_texts(texts: list[str]) -> NDArray[np.float32]:
     """Encode a batch of texts into normalised latent vectors.
+
+    Resolution order (per-call so behaviour adapts as Pro / models become
+    available without restarting the service):
+        1. sentence-transformers (Pro pack)
+        2. llama-server ``/v1/embeddings`` (Core, model loaded)
+        3. TF-IDF hashing (no model)
 
     Returns
     -------
@@ -113,6 +236,7 @@ def encode_texts(texts: list[str]) -> NDArray[np.float32]:
     if not texts:
         return np.empty((0, get_dims()), dtype=np.float32)
 
+    # 1. SBERT (Pro)
     if _USE_SBERT:
         model = _get_sbert_model()
         vecs: NDArray[np.float32] = model.encode(
@@ -123,6 +247,16 @@ def encode_texts(texts: list[str]) -> NDArray[np.float32]:
         )
         return vecs.astype(np.float32)
 
+    # 2. llama-server sidecar
+    llama_vecs = _llama_embed_sync(texts)
+    if llama_vecs:
+        arr = np.asarray(llama_vecs, dtype=np.float32)
+        # L2-normalise so cosine similarity == dot product (matches SBERT path)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-10)
+        return (arr / norms).astype(np.float32)
+
+    # 3. TF-IDF fallback
     return _tfidf.encode(texts)
 
 

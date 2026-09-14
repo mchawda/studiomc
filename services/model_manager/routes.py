@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import uuid
 from pathlib import Path
 
 # ── Path setup ────────────────────────────────────────────────────────
@@ -15,24 +14,22 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
+import os
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-import os
-
-from common.config import INFERENCE_PORT, MODELS_DIR
+from common.config import MODELS_DIR
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 from common.schemas import (
     AIModel,
     AutopilotResult,
     HardwareInfo,
-    ModelDownloadRequest,
     ModelDownloadStatus,
     ModelSource,
 )
-
 from model_manager import autopilot, downloader, registry
 from model_manager.autopilot import BackendModelInfo, fetch_adapters_from_db
 

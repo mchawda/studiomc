@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:studiomc_app/models/app_models.dart';
+import 'package:studiomc_app/widgets/chat/artifact_block.dart';
 import 'package:studiomc_app/widgets/chat/code_block_widget.dart';
 
 /// Clean message layout — no heavy colored bubbles.
@@ -68,27 +69,6 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _buildAvatar(ThemeData theme, {required bool isUser}) {
-    return Container(
-      width: 28,
-      height: 28,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primary.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Center(
-        child: Text(
-          'MC',
-          style: GoogleFonts.spaceGrotesk(
-            fontSize: 9,
-            fontWeight: FontWeight.w700,
-            color: theme.colorScheme.primary,
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildMessageContent(BuildContext context, ThemeData theme, bool isUser) {
     final textColor = theme.colorScheme.onSurface;
     final parts = _parseContent(message.content);
@@ -134,9 +114,13 @@ class MessageBubble extends StatelessWidget {
     } else {
       children.addAll(parts.map((part) {
         if (part.isCode) {
+          final lang = part.language ?? '';
+          final widget = isPreviewableArtifact(lang)
+              ? ArtifactBlock(code: part.text, language: lang)
+              : CodeBlockWidget(code: part.text, language: lang);
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: CodeBlockWidget(code: part.text, language: part.language ?? ''),
+            child: widget,
           );
         }
         return _buildStreamingText(theme, part.text, textColor, false);

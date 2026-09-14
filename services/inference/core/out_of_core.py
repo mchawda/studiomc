@@ -74,7 +74,14 @@ def _patch_mps_unsupported_ops() -> None:
     # Also patch the module-level torch.histc
     _original_torch_histc = torch.histc
 
-    def _safe_torch_histc(input: torch.Tensor, bins: int = 100, min: int = 0, max: int = 0, *, out: torch.Tensor | None = None) -> torch.Tensor:
+    def _safe_torch_histc(
+        input: torch.Tensor,
+        bins: int = 100,
+        min: int = 0,
+        max: int = 0,
+        *,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         orig_device = input.device
         # histc doesn't support Int on any device — cast to float
         needs_cast = not input.is_floating_point()
@@ -329,7 +336,6 @@ class OutOfCoreEngine:
         if self.model is None or self.config is None:
             return
 
-        import math
 
         # Find the rotary embedding module
         rotary_emb = getattr(self.model.model, "rotary_emb", None)

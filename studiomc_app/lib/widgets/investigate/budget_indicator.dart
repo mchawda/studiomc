@@ -27,7 +27,7 @@ class BudgetIndicator extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Column(
@@ -39,7 +39,7 @@ class BudgetIndicator extends StatelessWidget {
               Text(
                 'Tool calls: $toolCallsUsed/$toolCallsLimit',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withOpacity(0.7),
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
                 ),
               ),
             ],
@@ -60,7 +60,7 @@ class BudgetIndicator extends StatelessWidget {
               Text(
                 'Time: ${timeUsedSeconds.toStringAsFixed(1)}s / ${timeLimitSeconds.toStringAsFixed(0)}s',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withOpacity(0.7),
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
                 ),
               ),
             ],

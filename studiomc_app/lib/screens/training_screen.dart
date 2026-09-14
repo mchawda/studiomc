@@ -12,6 +12,7 @@ import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/local_inference_service.dart';
 import 'package:studiomc_app/services/training_service.dart';
+import 'package:studiomc_app/widgets/pro_pack/pro_pack_install_dialog.dart';
 
 // ── Private helpers ──
 
@@ -28,7 +29,6 @@ class _ExtractItem {
     required this.category,
     required this.content,
     this.sourceDoc,
-    this.sourcePage,
     // ignore: unused_element_parameter
     this.isCritical = false,
   });
@@ -631,15 +631,23 @@ $truncated
     _showSnack('Starting personalization…');
 
     try {
-      final result = await _trainingService.startTraining(
-        baseModelId: baseModelId,
-        adapterName: name,
-        sourceType: sourceType,
-        sourceRef: sourceRef,
-        extractContent: extractContent.isNotEmpty ? extractContent : null,
-        personalizationGoal: goalStr,
-        documentIds: _selectedDocumentIds.toList(),
-        collectionIds: _selectedCollectionIds.toList(),
+      // Adapter training requires the Pro pack (PyTorch + peft). If the
+      // backend replies 412 with `pro_pack_required`, the helper pops the
+      // install dialog and re-runs this call once the pack is ready.
+      final result = await withProPackGuard(
+        context,
+        () => _trainingService.startTraining(
+          baseModelId: baseModelId,
+          adapterName: name,
+          sourceType: sourceType,
+          sourceRef: sourceRef,
+          extractContent: extractContent.isNotEmpty ? extractContent : null,
+          personalizationGoal: goalStr,
+          documentIds: _selectedDocumentIds.toList(),
+          collectionIds: _selectedCollectionIds.toList(),
+        ),
+        fallbackReason:
+            'Training a custom adapter requires the Studiomc Pro pack.',
       );
 
       if (result != null && result['run_id'] != null) {

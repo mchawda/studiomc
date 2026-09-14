@@ -20,11 +20,12 @@ import json
 import logging
 import platform
 import shutil
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from training.tokenizer_utils import TrainingSample, format_training_samples
 
@@ -36,7 +37,7 @@ _HAS_MLX_LM = False
 
 if _IS_APPLE_SILICON:
     try:
-        import mlx.core as mx
+        import mlx.core as mx  # noqa: F401  (capability probe)
 
         _HAS_MLX = True
     except ImportError:
@@ -44,7 +45,7 @@ if _IS_APPLE_SILICON:
 
     try:
         import mlx_lm
-        from mlx_lm import lora as mlx_lora
+        from mlx_lm import lora as mlx_lora  # noqa: F401  (probe; lazy-imported below)
 
         _HAS_MLX_LM = True
     except ImportError:
@@ -251,8 +252,8 @@ async def train_mlx_lora(
             step_losses: list[float] = []
 
             try:
-                from mlx_lm.tuner.trainer import TrainingArgs, train as mlx_train
-                from mlx_lm.tuner.utils import build_schedule
+                from mlx_lm.tuner.trainer import TrainingArgs
+                from mlx_lm.tuner.trainer import train as mlx_train
 
                 model, tokenizer = mlx_lm.load(str(model_path))
 
@@ -312,7 +313,7 @@ async def train_mlx_lora(
                 import subprocess
 
                 cmd = [
-                    sys.executable if "sys" in dir() else "python3",
+                    sys.executable,
                     "-m",
                     "mlx_lm.lora",
                     "--model",
@@ -332,7 +333,6 @@ async def train_mlx_lora(
                     "--train",
                 ]
 
-                import sys as _sys
 
                 proc = subprocess.run(
                     cmd,

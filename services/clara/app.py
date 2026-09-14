@@ -17,15 +17,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from clara.routes import router
 from common.config import CLARA_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
-
-from clara.routes import router
 
 # ── Logging setup ────────────────────────────────────────────────
 
@@ -35,12 +36,25 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    ensure_dirs()
+    await Database.instance()  # warm up the singleton
+    try:
+        yield
+    finally:
+        db = await Database.instance()
+        await db.close()
+
+
 # ── App ──────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Studiomc CLaRa Service",
     version="0.1.0",
     description="Compression-native RAG: ingest, retrieve, and answer with citations.",
+    lifespan=lifespan,
 )
 
 # CORS — allow the Electron front-end on any localhost port
@@ -53,21 +67,6 @@ app.add_middleware(
 )
 
 app.include_router(router)
-
-
-# ── Lifecycle events ─────────────────────────────────────────────
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    ensure_dirs()
-    await Database.instance()  # warm up the singleton
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    db = await Database.instance()
-    await db.close()
 
 
 # ── CLI entry point ──────────────────────────────────────────────

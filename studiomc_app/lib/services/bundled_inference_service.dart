@@ -30,10 +30,16 @@ class BundledInferenceService extends ChangeNotifier {
 
   bool _available = false;
   bool _starting = false;
+  bool _disposed = false;
   String? _activeModel;
   List<String> _localModels = [];
 
   double _tokPerS = 0.0;
+
+  // Serializes _autoSelectModel and selectModel so init(), recheckAvailability(),
+  // and user-driven model swaps cannot interleave and overwrite each other's
+  // _activeModel state mid-flight.
+  Completer<void>? _selectInFlight;
 
   // ── Getters ──
   bool get available => _available;
@@ -114,9 +120,13 @@ class BundledInferenceService extends ChangeNotifier {
 
     _retryTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       attempts++;
+      if (_disposed) {
+        timer.cancel();
+        return;
+      }
       if (_available || attempts > maxAttempts) {
         timer.cancel();
-        if (!_available) {
+        if (!_available && !_disposed) {
           debugPrint('[splicellm] Background retry gave up after $attempts attempts');
           _starting = false;
           notifyListeners();
@@ -126,11 +136,14 @@ class BundledInferenceService extends ChangeNotifier {
 
       if (await _checkHealth()) {
         timer.cancel();
+        if (_disposed) return;
         debugPrint('[splicellm] Backend came online (background attempt $attempts)');
         _available = true;
         _starting = false;
         await _loadModels();
+        if (_disposed) return;
         await _autoSelectModel(_preferredModel);
+        if (_disposed) return;
         notifyListeners();
       }
     });
@@ -159,9 +172,27 @@ class BundledInferenceService extends ChangeNotifier {
 
   /// Auto-select a model on the backend.
   ///
-  /// Tries the preferred model first. If that fails (e.g. GGUF not loaded),
-  /// falls back to the first Ollama model, then the first available model.
+  /// Serialised via [_selectInFlight] so concurrent callers (e.g. the
+  /// initial `init()` and a later `recheckAvailability()`) cannot race
+  /// and end up with two `selectModel` requests in flight against the
+  /// same backend.
   Future<void> _autoSelectModel(String? preferredModel) async {
+    // Coalesce concurrent attempts.
+    final inFlight = _selectInFlight;
+    if (inFlight != null) {
+      return inFlight.future;
+    }
+    final completer = Completer<void>();
+    _selectInFlight = completer;
+    try {
+      await _autoSelectModelInner(preferredModel);
+    } finally {
+      _selectInFlight = null;
+      if (!completer.isCompleted) completer.complete();
+    }
+  }
+
+  Future<void> _autoSelectModelInner(String? preferredModel) async {
     await _loadModels();
 
     // Strategy: try preferred model first, then Ollama (most reliable),
@@ -411,7 +442,9 @@ class BundledInferenceService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _retryTimer?.cancel();
+    _retryTimer = null;
     _http.close();
     super.dispose();
   }

@@ -12,7 +12,6 @@ Each tool function:
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from pathlib import Path
@@ -20,10 +19,8 @@ from typing import Any
 
 from common.config import DOCS_DIR
 from common.database import Database
-from common.schemas import Citation, DocChunk
-
+from common.schemas import Citation
 from lre.sandbox import (
-    SecurityViolation,
     validate_doc_id,
     validate_path,
     validate_pattern,

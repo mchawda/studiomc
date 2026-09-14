@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +13,7 @@ import 'package:studiomc_app/models/app_models.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/utils/platform_utils.dart' as platform;
 import 'package:studiomc_app/widgets/chat/conversation_controls.dart';
+import 'package:studiomc_app/widgets/shell/command_palette.dart';
 
 /// Perplexity-inspired app shell.
 /// Collapsed state = slim icon rail (like Perplexity's left nav).
@@ -188,28 +190,45 @@ class _AppShellState extends State<AppShell> {
     final width = MediaQuery.of(context).size.width;
     final isMobile = width < 768;
 
+    final Widget shell;
     if (isMobile) {
       // SafeArea handles notches and home indicators on real mobile devices.
       final body = platform.isMobile
           ? SafeArea(child: widget.child)
           : widget.child;
-      return Scaffold(
+      shell = Scaffold(
         body: body,
         drawer: _buildExpandedSidebar(context),
         bottomNavigationBar: _buildBottomNav(context),
       );
+    } else {
+      shell = Scaffold(
+        body: Row(
+          children: [
+            _buildIconRail(context),
+            if (_sidebarExpanded) _buildExpandedSidebar(context),
+            Expanded(child: widget.child),
+          ],
+        ),
+      );
     }
 
-    return Scaffold(
-      body: Row(
-        children: [
-          // Icon rail (always visible on desktop, like Perplexity)
-          _buildIconRail(context),
-          // Expanded sidebar overlay
-          if (_sidebarExpanded) _buildExpandedSidebar(context),
-          // Main content
-          Expanded(child: widget.child),
-        ],
+    // Cmd-K / Ctrl-K opens the command palette globally.
+    return Shortcuts(
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.keyK, meta: true): _OpenPaletteIntent(),
+        SingleActivator(LogicalKeyboardKey.keyK, control: true): _OpenPaletteIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _OpenPaletteIntent: CallbackAction<_OpenPaletteIntent>(
+            onInvoke: (_) {
+              CommandPalette.show(context);
+              return null;
+            },
+          ),
+        },
+        child: Focus(autofocus: true, child: shell),
       ),
     );
   }
@@ -909,4 +928,10 @@ class _ChatListItemState extends State<_ChatListItem> {
       widget.onRename(newTitle);
     }
   }
+}
+
+/// Intent fired by the global Cmd-K / Ctrl-K shortcut. Handled in
+/// [_AppShellState.build] to surface the [CommandPalette] dialog.
+class _OpenPaletteIntent extends Intent {
+  const _OpenPaletteIntent();
 }

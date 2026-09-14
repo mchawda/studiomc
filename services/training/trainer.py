@@ -15,11 +15,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 
 from common.config import ADAPTERS_DIR
 from common.database import Database
-from training.lora_trainer import train_adapter, TrainingResult
+from training.lora_trainer import TrainingResult, train_adapter
 from training.mlx_trainer import MLX_TRAINING_AVAILABLE, train_mlx_lora
 from training.tokenizer_utils import count_tokens
 
@@ -108,7 +107,9 @@ async def run_training(
 
         if not training_text.strip():
             await db.execute(
-                "UPDATE training_runs SET status = 'failed', error_message = 'No training data found.', completed_at = ? WHERE id = ?",
+                "UPDATE training_runs SET status = 'failed', "
+                "error_message = 'No training data found.', "
+                "completed_at = ? WHERE id = ?",
                 (datetime.utcnow().isoformat(), run_id),
             )
             await db.commit()
@@ -237,7 +238,9 @@ async def run_training(
 
         # Mark training complete
         await db.execute(
-            "UPDATE training_runs SET status = 'completed', progress_percent = 100.0, eta_seconds = 0, completed_at = ?, metrics_json = ? WHERE id = ?",
+            "UPDATE training_runs SET status = 'completed', "
+            "progress_percent = 100.0, eta_seconds = 0, "
+            "completed_at = ?, metrics_json = ? WHERE id = ?",
             (datetime.utcnow().isoformat(), json.dumps(metrics), run_id),
         )
         await db.commit()

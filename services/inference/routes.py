@@ -15,7 +15,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
@@ -33,18 +32,16 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from common.database import Database
 from common.schemas import (
-    AIModel,
-    InferenceProfile,
     ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
-    SearchResult,
     SearchResponse,
+    SearchResult,
 )
-from common.database import Database
-
-from inference.engine import GenerationMetrics, InferenceEngine
+from inference.engine import InferenceEngine
+from inference.engine_types import GenerationMetrics
 from inference.router import InferenceRouter
 from inference.streaming import sse_generate, websocket_stream_handler
 
@@ -91,7 +88,6 @@ def get_engine() -> InferenceEngine:
 @router.get("/health")
 async def health() -> dict[str, Any]:
     ir = get_router()
-    engine = ir.engine
     backends = ir.get_backend_status()
     online_backends = [n for n, info in backends.items() if info.online]
     return {
@@ -227,7 +223,7 @@ async def select_model(req: ModelSelectRequest) -> dict[str, Any]:
     try:
         # For local models (not prefixed with a known external backend),
         # look up the model in the DB and resolve its filesystem path.
-        if not req.backend or req.backend in ("studiomc", "llamacpp"):
+        if not req.backend or req.backend in ("studiomc", "llama_server", "llamacpp"):
             if not any(
                 req.model_id.startswith(p)
                 for p in ("ollama/", "lmstudio/", "frontier:")
@@ -241,14 +237,16 @@ async def select_model(req: ModelSelectRequest) -> dict[str, Any]:
                         (req.model_id,),
                     )
                     if row:
-                        # Check if a GGUF file exists for this model → use llamacpp
+                        # GGUF files are served by the new llama-server
+                        # sidecar (built into the Core bundle). The legacy
+                        # ``llamacpp`` Python backend is kept around for
+                        # users who pinned it but is no longer the default.
                         model_dir = MODELS_DIR / req.model_id
                         gguf_files = list(model_dir.glob("*.gguf")) if model_dir.is_dir() else []
                         if gguf_files:
-                            # Route to llamacpp backend
-                            req.backend = "llamacpp"
+                            req.backend = "llama_server"
                         else:
-                            # Fallback to SpliceLLM for safetensors
+                            # Safetensors path → SpliceLLM (Pro pack required).
                             model_path = row["source_ref"] or req.model_id
                             await ir.engine.load_model(req.model_id, model_path)
 

@@ -74,7 +74,7 @@ class ModelManagerService {
         'disk_read_mbps': 0,
         'hw_fingerprint': '',
       },
-      if (userIntent != null) 'user_intent': userIntent,
+      'user_intent': ?userIntent,
     });
   }
 

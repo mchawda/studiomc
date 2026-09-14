@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -284,6 +285,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _checkHealthUrl(ServiceUrls.orchestrator),
       ]);
 
+      if (!mounted) return;
       final supervisor = context.read<SupervisorService>();
       final status = await supervisor.getStatus();
 
@@ -403,6 +405,70 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   horizontal: 10, vertical: 4)),
                           minimumSize: const WidgetStatePropertyAll(
                               Size(0, 28)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // ── Memory & MCP shortcuts ──
+                _compactCard(
+                  theme,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Memory',
+                                style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 12, fontWeight: FontWeight.w600)),
+                            Text('What Studiomc remembers across chats',
+                                style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    color: theme.colorScheme.secondary)),
+                          ],
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () => context.go('/settings/memory'),
+                        icon: const Icon(Icons.psychology_alt_outlined, size: 14),
+                        label: Text('Manage', style: GoogleFonts.inter(fontSize: 10)),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 28),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _compactCard(
+                  theme,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('MCP servers',
+                                style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 12, fontWeight: FontWeight.w600)),
+                            Text('Connect external tool servers (filesystem, GitHub, …)',
+                                style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    color: theme.colorScheme.secondary)),
+                          ],
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () => context.go('/settings/mcp'),
+                        icon: const Icon(Icons.extension_outlined, size: 14),
+                        label: Text('Manage', style: GoogleFonts.inter(fontSize: 10)),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 28),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
                         ),
                       ),
                     ],
@@ -938,7 +1004,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: theme.colorScheme.primaryContainer.withOpacity(0.3),
+                color: theme.colorScheme.primaryContainer.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
@@ -1043,7 +1109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: Container(
                       decoration: BoxDecoration(
                         color: theme.colorScheme.surfaceContainerHighest
-                            .withOpacity(0.4),
+                            .withValues(alpha: 0.4),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       padding: const EdgeInsets.symmetric(
@@ -1057,7 +1123,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             size: 14,
                             color: k['revoked'] == true
                                 ? theme.colorScheme.error
-                                : theme.colorScheme.primary.withOpacity(0.7),
+                                : theme.colorScheme.primary.withValues(alpha: 0.7),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -1117,7 +1183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: theme.colorScheme.surfaceContainerHighest
-                    .withOpacity(0.3),
+                    .withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Column(
@@ -1189,7 +1255,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             height: 16,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: theme.colorScheme.primary.withOpacity(0.1),
+              color: theme.colorScheme.primary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(num,
@@ -1230,7 +1296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: GoogleFonts.inter(
                   fontSize: 9,
                   fontStyle: FontStyle.italic,
-                  color: theme.colorScheme.secondary.withOpacity(0.7)),
+                  color: theme.colorScheme.secondary.withValues(alpha: 0.7)),
             ),
             const SizedBox(height: 10),
 
@@ -1291,7 +1357,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Container(
                     decoration: BoxDecoration(
                       color: theme.colorScheme.surfaceContainerHighest
-                          .withOpacity(0.4),
+                          .withValues(alpha: 0.4),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     padding:
@@ -1340,7 +1406,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               Icon(Icons.memory,
                                   size: 14,
                                   color: theme.colorScheme.primary
-                                      .withOpacity(0.7)),
+                                      .withValues(alpha: 0.7)),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(fact,

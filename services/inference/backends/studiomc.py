@@ -21,8 +21,9 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
-from inference.engine import GenerationMetrics, InferenceEngine
 from inference.backends import BackendClient, BackendInfo, UnifiedModel
+from inference.engine import InferenceEngine
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.backends.studiomc")
 

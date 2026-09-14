@@ -12,7 +12,6 @@ Works with both the InferenceEngine directly and the InferenceRouter.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import sys
@@ -29,7 +28,8 @@ if _SERVICES_DIR not in sys.path:
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from inference.engine import GenerationMetrics, InferenceEngine
+from inference.engine import InferenceEngine
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.streaming")
 

@@ -7,9 +7,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart';
 import 'package:studiomc_app/services/api_client.dart';
-import 'package:studiomc_app/services/settings_service.dart';
 
 /// Model Arena — side-by-side comparison of two models.
 ///
@@ -44,7 +42,7 @@ class _ArenaScreenState extends State<ArenaScreen> {
 
   int? _vote; // null = no vote, 0 = A, 1 = B, 2 = tie
 
-  List<Map<String, String>> _history = [];
+  final List<Map<String, String>> _history = [];
 
   @override
   void initState() {
@@ -198,7 +196,6 @@ class _ArenaScreenState extends State<ArenaScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final width = MediaQuery.of(context).size.width;
 
     return Scaffold(
       body: Column(

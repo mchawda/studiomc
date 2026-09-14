@@ -9,7 +9,6 @@ It starts, monitors, health-checks, and auto-restarts every other backend servic
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -22,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from common.config import LOGS_DIR, SERVICE_HOST, SUPERVISOR_PORT, ensure_dirs
-
+from common.fastapi_pro_pack import install_pro_pack_handler
 from supervisor.manager import ProcessManager
 from supervisor.routes import router, set_manager
 
@@ -89,6 +88,7 @@ app.add_middleware(
 
 # Wire the manager into the routes module
 set_manager(manager)
+install_pro_pack_handler(app)
 app.include_router(router)
 
 

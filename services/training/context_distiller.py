@@ -28,10 +28,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from clara.compressor import encode_texts
 from common.config import ADAPTERS_DIR, INFERENCE_PORT, MODELS_DIR, service_url
-from common.database import Database
-
-from clara.compressor import encode_texts, get_dims
 
 logger = logging.getLogger("training.context_distiller")
 
@@ -43,7 +41,7 @@ _HAS_PEFT = False
 
 try:
     import torch
-    import torch.nn.functional as F
+    import torch.nn.functional as F  # noqa: F401  (capability probe)
 
     _HAS_TORCH = True
 except ImportError:
@@ -57,7 +55,7 @@ except ImportError:
     pass
 
 try:
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, TaskType, get_peft_model
 
     _HAS_PEFT = True
 except ImportError:

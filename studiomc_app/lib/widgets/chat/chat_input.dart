@@ -3,7 +3,6 @@
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -259,25 +258,6 @@ class _ChatInputState extends State<ChatInput> {
     }
   }
 
-  /// Turn GGUF filename into a friendly name.
-  String _humanName(String filename) {
-    var name = filename
-        .replaceAll('.gguf', '')
-        .replaceAll('.bin', '')
-        .replaceAll(RegExp(r'-q\d.*', caseSensitive: false), '')
-        .replaceAll(RegExp(r'[-_]instruct', caseSensitive: false), '')
-        .replaceAll(RegExp(r'[-_]chat', caseSensitive: false), '')
-        .replaceAll('-', ' ')
-        .replaceAll('_', ' ')
-        .trim();
-    name = name.split(' ').map((w) {
-      if (w.isEmpty) return w;
-      if (RegExp(r'^\d').hasMatch(w)) return w;
-      return '${w[0].toUpperCase()}${w.substring(1)}';
-    }).join(' ');
-    return name.isEmpty ? filename : name;
-  }
-
   // ── Send ──
 
   void _handleSend() {
@@ -512,7 +492,7 @@ class _ChatInputState extends State<ChatInput> {
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
                         itemCount: _attachedImages.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        separatorBuilder: (_, _) => const SizedBox(width: 8),
                         itemBuilder: (_, i) => _buildImageThumb(theme, i),
                       ),
                     ),
@@ -1016,14 +996,10 @@ enum _FileUploadState { pending, uploading, done, error }
 
 class _AttachedFile {
   final PlatformFile file;
-  _FileUploadState state;
+  _FileUploadState state = _FileUploadState.pending;
   String? documentId;
 
-  _AttachedFile({
-    required this.file,
-    this.state = _FileUploadState.pending,
-    this.documentId,
-  });
+  _AttachedFile({required this.file});
 }
 
 class _AttachedImage {

@@ -19,10 +19,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from common.config import ensure_dirs, DATA_RECIPES_PORT, SERVICE_HOST
+
+from common.config import DATA_RECIPES_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
 from data_recipes.routes import router
 
@@ -32,10 +36,23 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    ensure_dirs()
+    await Database.instance()
+    try:
+        yield
+    finally:
+        db = await Database.instance()
+        await db.close()
+
+
 app = FastAPI(
     title="Studiomc Data Recipes Service",
     version="0.1.0",
     description="Auto-generate training datasets from documents.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -49,16 +66,13 @@ app.add_middleware(
 app.include_router(router)
 
 
-@app.on_event("startup")
-async def _startup() -> None:
-    ensure_dirs()
-    await Database.instance()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    db = await Database.instance()
-    await db.close()
+# ── Root health (non-prefixed, for supervisor probes) ────────────────────
+# The data_recipes APIRouter is mounted under ``/recipes`` so the
+# router-level ``/health`` resolves to ``/recipes/health``. The supervisor
+# probes ``/health`` at the root, so re-expose it here.
+@app.get("/health")
+async def root_health() -> dict[str, str]:
+    return {"status": "ok", "service": "data_recipes"}
 
 
 if __name__ == "__main__":

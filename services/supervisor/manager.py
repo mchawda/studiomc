@@ -25,15 +25,16 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.config import ALL_PORTS, LOGS_DIR, SERVICE_HOST, ensure_dirs, service_url
 from common.hardware import scan_hardware
+from common.pro_pack import ProPackRequiredError
+from common.pro_pack import get_status as pro_pack_status
 from common.schemas import HardwareInfo, ServiceStatus, SupervisorStatus
 
 logger = logging.getLogger("supervisor.manager")
@@ -62,12 +63,29 @@ MANAGED_SERVICES: dict[str, str] = {
     "orchestrator": "orchestrator/app.py",
     "training": "training/app.py",
     "data_recipes": "data_recipes/app.py",
+    "mcp": "mcp/app.py",
+    "memory": "memory/app.py",
 }
 
 HEALTH_CHECK_INTERVAL = 5  # seconds
 MAX_FAIL_BEFORE_RESTART = 3
 MAX_RESTARTS = 5
 GRACEFUL_SHUTDOWN_TIMEOUT = 5  # seconds before SIGKILL
+
+# After this many seconds of continuous healthy uptime, reset the
+# restart counter so transient failures earlier in the day don't push
+# the service into a permanent "failed" state.
+HEALTHY_RESET_UPTIME = 300  # 5 minutes
+
+# ── Deferred (Pro-pack-only) services ──────────────────────────────────
+# Services that depend on the Pro pack are NOT started by ``start_all``.
+# They're spawned on demand (Flutter pings ``/services/start?name=training``
+# when the user opens the Training screen) and stopped automatically after
+# ``IDLE_EVICT_SECONDS`` of no activity, freeing the ~2-3 GB of resident
+# RAM PyTorch holds open. The training service is responsible for calling
+# ``POST /services/training/touch`` whenever it serves a request.
+DEFERRED_SERVICES: set[str] = {"training"}
+IDLE_EVICT_SECONDS = 600  # 10 minutes of no /touch → stop the service
 
 
 # ── Per-service state ────────────────────────────────────────────────────
@@ -88,6 +106,11 @@ class ManagedProcess:
     restart_count: int = 0
     consecutive_failures: int = 0
     _backoff: float = 1.0
+    # Last activity timestamp for idle eviction (deferred services only).
+    # Bumped via ``ProcessManager.touch_service()``. ``None`` means never
+    # touched since startup, in which case ``start_time`` is used as the
+    # baseline.
+    last_activity: float | None = None
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -117,6 +140,10 @@ class ProcessManager:
     def __init__(self) -> None:
         ensure_dirs()
         self._services: dict[str, ManagedProcess] = {}
+        # Per-service async locks prevent concurrent start/stop/restart
+        # from the user-facing API and the background health-check loop
+        # from spawning duplicate processes on the same port.
+        self._service_locks: dict[str, asyncio.Lock] = {}
         self._health_task: asyncio.Task[None] | None = None
         self._hw_info: HardwareInfo | None = None
         self._shutting_down = False
@@ -128,6 +155,7 @@ class ProcessManager:
                 port=port,
                 app_path=str(SERVICES_DIR / rel_path),
             )
+            self._service_locks[name] = asyncio.Lock()
 
     # ── Stale process cleanup ────────────────────────────────────────
 
@@ -187,12 +215,20 @@ class ProcessManager:
     # ── Start / Stop ─────────────────────────────────────────────────
 
     async def start_all(self) -> list[ServiceStatus]:
-        """Start every managed service in order."""
+        """Start every managed service in order.
+
+        Services in :data:`DEFERRED_SERVICES` (e.g. ``training`` which
+        needs the ~1 GB Pro pack) are skipped — they're spawned on demand
+        via an explicit ``start_service(name)`` call from the UI.
+        """
         results: list[ServiceStatus] = []
         for name in MANAGED_SERVICES:
+            if name in DEFERRED_SERVICES:
+                # Report current status without launching.
+                results.append(self._get(name).to_status())
+                continue
             st = await self.start_service(name)
             results.append(st)
-        # Start background health-check loop
         self._ensure_health_loop()
         return results
 
@@ -215,13 +251,19 @@ class ProcessManager:
         return results
 
     async def start_service(self, name: str) -> ServiceStatus:
-        """Start a single service by name."""
+        """Start a single service by name (idempotent, lock-protected)."""
         svc = self._get(name)
-        if svc.status in ("running", "starting"):
+        async with self._service_locks[name]:
+            return await self._start_service_locked(svc)
+
+    async def _start_service_locked(self, svc: ManagedProcess) -> ServiceStatus:
+        """Inner implementation. Caller must hold ``_service_locks[svc.name]``."""
+        # Re-check status after acquiring the lock — another caller may
+        # have already started the service while we were waiting.
+        if svc.status in ("running", "starting") and svc.process is not None:
             return svc.to_status()
 
         if svc.status == "failed":
-            # Reset restart counter on explicit manual start
             svc.restart_count = 0
             svc.consecutive_failures = 0
             svc._backoff = 1.0
@@ -230,14 +272,23 @@ class ProcessManager:
         svc.error = None
 
         try:
-            log_path = LOGS_DIR / f"{name}.log"
+            log_path = LOGS_DIR / f"{svc.name}.log"
             log_file = open(log_path, "a")
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            # Pro-pack-routed services (training) are launched with a
+            # *separate* Python interpreter living in ``~/.studiomc/pro-env/``.
+            # That interpreter doesn't know about the bundled service
+            # packages, so we point it at SERVICES_DIR via PYTHONPATH.
+            if svc.name in DEFERRED_SERVICES:
+                env["PYTHONPATH"] = (
+                    str(SERVICES_DIR)
+                    + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+                )
 
             cmd = self._build_launch_cmd(svc)
-            logger.info("Launching %s: %s", name, " ".join(cmd))
+            logger.info("Launching %s: %s", svc.name, " ".join(cmd))
 
             svc.process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -249,19 +300,32 @@ class ProcessManager:
             )
             svc.pid = svc.process.pid
             svc.start_time = time.time()
+            svc.last_activity = svc.start_time
             svc.status = "running"
-            logger.info("Started %s (pid=%s, port=%s)", name, svc.pid, svc.port)
+            logger.info("Started %s (pid=%s, port=%s)", svc.name, svc.pid, svc.port)
+        except ProPackRequiredError as exc:
+            # Specific path for deferred services: surface a structured
+            # error the supervisor route can convert into HTTP 412 so the
+            # Flutter UI knows to pop the install dialog.
+            svc.status = "error"
+            svc.error = "pro_pack_required"
+            logger.warning("Cannot start %s: %s", svc.name, exc)
+            raise
         except Exception as exc:
             svc.status = "error"
             svc.error = str(exc)
-            logger.exception("Failed to start %s", name)
+            logger.exception("Failed to start %s", svc.name)
 
         self._ensure_health_loop()
         return svc.to_status()
 
     async def stop_service(self, name: str) -> ServiceStatus:
-        """Gracefully stop a single service."""
+        """Gracefully stop a single service (lock-protected)."""
         svc = self._get(name)
+        async with self._service_locks[name]:
+            return await self._stop_service_locked(svc)
+
+    async def _stop_service_locked(self, svc: ManagedProcess) -> ServiceStatus:
         if svc.process is None or svc.status == "stopped":
             svc.status = "stopped"
             return svc.to_status()
@@ -269,12 +333,27 @@ class ProcessManager:
         await self._terminate(svc)
         return svc.to_status()
 
+    def touch_service(self, name: str) -> None:
+        """Bump the last-activity timestamp for a deferred service.
+
+        Called by deferred services (currently only ``training``) on every
+        request so the supervisor doesn't evict them mid-run. No-op for
+        services that aren't in :data:`DEFERRED_SERVICES`.
+        """
+        if name not in DEFERRED_SERVICES:
+            return
+        svc = self._services.get(name)
+        if svc is None:
+            return
+        svc.last_activity = time.time()
+
     async def restart_service(self, name: str) -> ServiceStatus:
-        """Restart a single service."""
-        await self.stop_service(name)
-        # Brief pause to let port release
-        await asyncio.sleep(0.5)
-        return await self.start_service(name)
+        """Restart a single service (atomic stop+start under the same lock)."""
+        svc = self._get(name)
+        async with self._service_locks[name]:
+            await self._stop_service_locked(svc)
+            await asyncio.sleep(0.5)  # let port release
+            return await self._start_service_locked(svc)
 
     # ── Status ───────────────────────────────────────────────────────
 
@@ -311,6 +390,32 @@ class ProcessManager:
         tasks = [self._check_one(svc) for svc in self._services.values() if svc.status in ("running", "starting")]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._evict_idle()
+
+    async def _evict_idle(self) -> None:
+        """Stop deferred services that have been idle for too long.
+
+        Frees ~2-3 GB of RAM that PyTorch holds open after a training run
+        completes. Triggered solely from the health-check loop so we don't
+        need a separate timer.
+        """
+        now = time.time()
+        for name in DEFERRED_SERVICES:
+            svc = self._services.get(name)
+            if svc is None or svc.status != "running":
+                continue
+            baseline = svc.last_activity or svc.start_time
+            if baseline is None:
+                continue
+            idle = now - baseline
+            if idle < IDLE_EVICT_SECONDS:
+                continue
+            logger.info(
+                "Evicting idle deferred service %s (idle=%.0fs > %ds)",
+                svc.name, idle, IDLE_EVICT_SECONDS,
+            )
+            async with self._service_locks[svc.name]:
+                await self._stop_service_locked(svc)
 
     async def _check_one(self, svc: ManagedProcess) -> None:
         """Health-check a single service."""
@@ -331,6 +436,23 @@ class ProcessManager:
                     svc.consecutive_failures = 0
                     if svc.status == "starting":
                         svc.status = "running"
+                    # Reset the restart counter once a service has been
+                    # healthy for HEALTHY_RESET_UPTIME seconds. Otherwise
+                    # a long-running service that flakes once an hour
+                    # eventually trips MAX_RESTARTS and gets marked
+                    # permanently failed.
+                    uptime = svc.uptime
+                    if (
+                        svc.restart_count > 0
+                        and uptime is not None
+                        and uptime >= HEALTHY_RESET_UPTIME
+                    ):
+                        logger.info(
+                            "%s healthy for %.0fs — resetting restart counter (was %d)",
+                            svc.name, uptime, svc.restart_count,
+                        )
+                        svc.restart_count = 0
+                        svc._backoff = 1.0
                     return
         except Exception:
             pass
@@ -346,7 +468,21 @@ class ProcessManager:
             await self._maybe_restart(svc)
 
     async def _maybe_restart(self, svc: ManagedProcess) -> None:
-        """Restart a service if it hasn't exceeded the restart limit."""
+        """Restart a service if it hasn't exceeded the restart limit.
+
+        The full stop/start sequence runs under the per-service lock so
+        the health loop and a concurrent manual ``restart_service`` call
+        cannot race and spawn two processes on the same port.
+
+        Deferred (Pro-pack) services are never auto-restarted — they're
+        on-demand, and an unexpected exit means the user's training run
+        finished or crashed; either way the supervisor should leave the
+        process down until the UI explicitly asks for it again.
+        """
+        if svc.name in DEFERRED_SERVICES:
+            svc.status = "stopped"
+            svc.error = None
+            return
         if svc.restart_count >= MAX_RESTARTS:
             svc.status = "failed"
             svc.error = f"Exceeded max restarts ({MAX_RESTARTS})"
@@ -360,9 +496,10 @@ class ProcessManager:
         logger.info("Restarting %s (attempt %d, backoff %.1fs)", svc.name, svc.restart_count, backoff)
         await asyncio.sleep(backoff)
 
-        await self._terminate(svc)
-        await asyncio.sleep(0.5)
-        await self.start_service(svc.name)
+        async with self._service_locks[svc.name]:
+            await self._terminate(svc)
+            await asyncio.sleep(0.5)
+            await self._start_service_locked(svc)
 
     # ── Internal helpers ─────────────────────────────────────────────
 
@@ -370,12 +507,31 @@ class ProcessManager:
     def _build_launch_cmd(svc: ManagedProcess) -> list[str]:
         """Build the command list to start a child service.
 
-        Development mode:
-            ["/path/to/.venv/bin/python", "inference/app.py"]
+        Three flavours:
 
-        Bundled mode (PyInstaller):
-            ["/path/to/studiomc_services", "--service", "inference"]
+        * Pro-pack service (currently just ``training``) — launched with
+          the Pro pack venv's interpreter (``~/.studiomc/pro-env/bin/python``)
+          running ``training/app.py`` directly. PyTorch + transformers
+          + peft import inside that subprocess only, never inside the
+          frozen supervisor.
+
+        * Bundled core service — launched as
+          ``./studiomc_services --service <name>`` so PyInstaller's
+          frozen entry point dispatches to the right uvicorn app.
+
+        * Development core service — ``python inference/app.py``.
+
+        Raises :class:`ProPackRequiredError` when a Pro-pack service is
+        requested but the pack is missing or out of date.
         """
+        if svc.name in DEFERRED_SERVICES:
+            status = pro_pack_status()
+            if not status.installed or status.needs_upgrade:
+                raise ProPackRequiredError(svc.name)
+            assert status.python_path is not None
+            # In bundled mode the source for training/app.py is shipped
+            # as data and lives at SERVICES_DIR/training/app.py.
+            return [status.python_path, svc.app_path]
         if IS_BUNDLED:
             return [sys.executable, "--service", svc.name]
         else:

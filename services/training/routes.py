@@ -32,7 +32,6 @@ import logging
 import shutil
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -51,7 +50,6 @@ from common.schemas import (
     TrainingRunStatus,
     TrainingSourceType,
 )
-
 from training.trainer import run_training
 
 logger = logging.getLogger("training.routes")
@@ -306,12 +304,18 @@ async def get_prompts() -> list[SuggestedExtractPrompt]:
         SuggestedExtractPrompt(
             id="section_summaries",
             label="Section Summaries",
-            prompt="Summarize each major section or chapter of this document. Include the section title and a concise summary.",
+            prompt=(
+                "Summarize each major section or chapter of this document. "
+                "Include the section title and a concise summary."
+            ),
         ),
         SuggestedExtractPrompt(
             id="terms_definitions",
             label="Terms & Definitions",
-            prompt="Extract important terms and their definitions from this document. Format as:\nTerm: [term]\nDefinition: [definition]",
+            prompt=(
+                "Extract important terms and their definitions from this "
+                "document. Format as:\nTerm: [term]\nDefinition: [definition]"
+            ),
         ),
     ]
 
@@ -349,7 +353,10 @@ async def start_distillation(req: DistillRequest) -> DistillStatus:
         )
     )
 
-    logger.info("Created distillation run %s: teacher=%s → student=%s", run_id, req.teacher_model_id, req.student_model_id)
+    logger.info(
+        "Created distillation run %s: teacher=%s → student=%s",
+        run_id, req.teacher_model_id, req.student_model_id,
+    )
     return status
 
 
@@ -444,7 +451,10 @@ async def _run_distillation(
         if result.final_loss is not None:
             status.metrics["final_loss"] = result.final_loss
 
-        logger.info("Distillation run=%s complete: %d samples, %d epochs", run_id, result.num_samples, result.epochs_completed)
+        logger.info(
+            "Distillation run=%s complete: %d samples, %d epochs",
+            run_id, result.num_samples, result.epochs_completed,
+        )
 
     except Exception as exc:
         logger.exception("Distillation run=%s failed", run_id)
@@ -723,7 +733,7 @@ async def export_safetensors(req: ExportSafetensorsRequest) -> dict:
 @router.post("/export/huggingface")
 async def export_huggingface(req: ExportHuggingFaceRequest) -> dict:
     """Push a model to HuggingFace Hub."""
-    from training.export import push_to_huggingface, merge_adapter
+    from training.export import merge_adapter, push_to_huggingface
 
     merged_dir = ADAPTERS_DIR / f"{req.adapter_id}-merged"
     if not merged_dir.exists():

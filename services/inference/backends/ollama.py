@@ -26,14 +26,14 @@ if _SERVICES_DIR not in sys.path:
 
 import httpx
 
-from inference.engine import GenerationMetrics
 from inference.backends import (
+    OLLAMA_DEFAULT_URL,
+    PROBE_TIMEOUT,
     BackendClient,
     BackendInfo,
     UnifiedModel,
-    OLLAMA_DEFAULT_URL,
-    PROBE_TIMEOUT,
 )
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.backends.ollama")
 

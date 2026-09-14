@@ -15,16 +15,21 @@ Endpoints:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
-import time
 import uuid
 from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from clara.compressor import (
+    COMPRESSOR_VERSION,
+    compute_source_offsets,
+    encode_texts,
+    save_index,
+)
+from clara.retriever import generate_answer, retrieve
 from common.config import INDEXES_DIR
 from common.database import Database
 from common.schemas import (
@@ -36,19 +41,9 @@ from common.schemas import (
     ClaraQueryResult,
     ClaraTrainRequest,
     ClaraTrainStatus,
-    DocChunk,
     GroundednessRequest,
     GroundednessResponse,
 )
-
-from clara.compressor import (
-    COMPRESSOR_VERSION,
-    compute_source_offsets,
-    encode_texts,
-    get_dims,
-    save_index,
-)
-from clara.retriever import generate_answer, retrieve
 
 logger = logging.getLogger("clara.routes")
 
@@ -371,25 +366,27 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in raw if len(s.strip().split()) >= 4]
 
 
+# Cheap stop-word set used by ``_keyword_overlap_score`` — common English
+# function words that should not contribute to a groundedness signal.
+_STOP_WORDS: frozenset[str] = frozenset(
+    "a an the is are was were be been being have has had do does did "
+    "will would shall should may might can could to of in for on with "
+    "at by from as into through during before after above below between "
+    "out off over under again further then once and but or nor not so "
+    "yet both either neither each every all any few more most other some "
+    "such no only own same than too very it its this that these those "
+    "i me my we our you your he him his she her they them their what "
+    "which who whom how if when where why".split()
+)
+
+
 def _keyword_overlap_score(sentence: str, snippet: str) -> float:
     """Compute a simple keyword overlap score between a sentence and a snippet.
 
     Returns 0.0 – 1.0 representing the fraction of meaningful words in the
     sentence that appear somewhere in the snippet.
     """
-    # Cheap stop-word set — skip very common English words
-    _STOP = frozenset(
-        "a an the is are was were be been being have has had do does did "
-        "will would shall should may might can could to of in for on with "
-        "at by from as into through during before after above below between "
-        "out off over under again further then once and but or nor not so "
-        "yet both either neither each every all any few more most other some "
-        "such no only own same than too very it its this that these those "
-        "i me my we our you your he him his she her they them their what "
-        "which who whom how if when where why".split()
-    )
-
-    sentence_words = set(sentence.lower().split()) - _STOP
+    sentence_words = set(sentence.lower().split()) - _STOP_WORDS
     if not sentence_words:
         return 0.0
 

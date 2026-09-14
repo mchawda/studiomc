@@ -14,37 +14,21 @@ Phase 3 additions:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from safetensors.torch import load_file
 
+# Re-exported here for back-compat; the dataclass itself is torch-free
+# so Core code can import it from ``inference.core.switch_types`` without
+# pulling in the Pro pack. See SPLIT_BUNDLE.md.
+from inference.core.switch_types import SwitchResult
+
+__all__ = ["SwitchResult", "LayerLoader", "safe_switch"]
+
 logger = logging.getLogger("inference.core.loader")
-
-
-# ── Switch result ─────────────────────────────────────────────────────
-
-
-@dataclass
-class SwitchResult:
-    """Outcome of a safe_switch operation."""
-
-    success: bool
-    active_model_id: str | None
-    active_model_path: str | None
-    error: str | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "success": self.success,
-            "active_model_id": self.active_model_id,
-            "active_model_path": self.active_model_path,
-            "error": self.error,
-        }
 
 
 # ── LayerLoader ──────────────────────────────────────────────────────

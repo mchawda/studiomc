@@ -16,14 +16,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
-import uvicorn
 from contextlib import asynccontextmanager
+
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from common.config import MODEL_MANAGER_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
-
 from model_manager.routes import router
 
 logger = logging.getLogger("model_manager")

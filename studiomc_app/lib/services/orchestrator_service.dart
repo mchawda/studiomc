@@ -2,7 +2,6 @@
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:studiomc_app/services/api_client.dart';
 
@@ -48,8 +47,8 @@ class OrchestratorService {
         'chat_id': chatId,
         'user_query': userQuery,
         'mode': mode,
-        if (collectionId != null) 'collection_id': collectionId,
-        if (budgets != null) 'budgets': budgets,
+        'collection_id': ?collectionId,
+        'budgets': ?budgets,
       };
 
       final response = await _api.post('/reasoning/run', body: body);

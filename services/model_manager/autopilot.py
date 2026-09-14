@@ -27,7 +27,6 @@ from common.schemas import (
     ModelRecommendation,
     SpeedRating,
 )
-
 from model_manager.registry import CURATED_MODELS, AIModel
 
 logger = logging.getLogger("model_manager.autopilot")
@@ -333,7 +332,7 @@ def recommend(
 
             if matched_adapter.is_active:
                 adapter_bonus = _ADAPTER_ACTIVE_BOOST
-                adapter_reason = f"Personalized for your documents"
+                adapter_reason = "Personalized for your documents"
             else:
                 adapter_bonus = _ADAPTER_INACTIVE_BOOST
                 adapter_reason = f"Trained adapter \"{matched_adapter.adapter_name}\" available"

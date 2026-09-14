@@ -15,19 +15,34 @@ from pathlib import Path
 # Ensure the common package is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from common.config import DOCUMENT_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
-
 from documents.routes import router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    ensure_dirs()
+    await Database.instance()  # warm up the singleton
+    try:
+        yield
+    finally:
+        db = await Database.instance()
+        await db.close()
+
 
 app = FastAPI(
     title="Studiomc Document Service",
     version="0.1.0",
     description="Upload, extract, chunk, and retrieve documents.",
+    lifespan=lifespan,
 )
 
 # CORS — allow the Electron front-end on any localhost port
@@ -40,21 +55,6 @@ app.add_middleware(
 )
 
 app.include_router(router)
-
-
-# ── Lifecycle events ─────────────────────────────────────────────
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    ensure_dirs()
-    await Database.instance()  # warm up the singleton
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    db = await Database.instance()
-    await db.close()
 
 
 # ── CLI entry point ──────────────────────────────────────────────

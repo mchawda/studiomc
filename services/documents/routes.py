@@ -12,14 +12,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from common.config import DOCS_DIR
 from common.database import Database
 from common.schemas import DocStatus
-
-from documents import extractor, chunker
+from documents import chunker, extractor
 
 router = APIRouter()
 
@@ -139,7 +138,8 @@ async def list_documents():
     """List all documents."""
     db = await Database.instance()
     rows = await db.fetchall(
-        "SELECT id, filename, mime, bytes, sha256, status, error_message, created_at FROM documents ORDER BY created_at DESC"
+        "SELECT id, filename, mime, bytes, sha256, status, error_message, "
+        "created_at FROM documents ORDER BY created_at DESC"
     )
     return [dict(r) for r in rows]
 
@@ -219,7 +219,9 @@ async def get_chunks(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
 
     rows = await db.fetchall(
-        "SELECT id, document_id, chunk_index, text, token_count, metadata_json FROM doc_chunks WHERE document_id = ? ORDER BY chunk_index",
+        "SELECT id, document_id, chunk_index, text, token_count, "
+        "metadata_json FROM doc_chunks WHERE document_id = ? "
+        "ORDER BY chunk_index",
         (doc_id,),
     )
     return [dict(r) for r in rows]

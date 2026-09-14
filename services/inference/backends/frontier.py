@@ -35,20 +35,20 @@ if _SERVICES_DIR not in sys.path:
 
 import httpx
 
-from inference.engine import GenerationMetrics
 from inference.backends import (
+    PROBE_TIMEOUT,
     BackendClient,
     BackendInfo,
     UnifiedModel,
-    PROBE_TIMEOUT,
 )
+from inference.engine_types import GenerationMetrics
 
 logger = logging.getLogger("inference.backends.frontier")
 
 
 # ── Cloud consent management ──────────────────────────────────────────
 
-class CloudConsentRequired(PermissionError):
+class CloudConsentRequiredError(PermissionError):
     """Raised when a cloud API call is attempted without user consent."""
 
     def __init__(self) -> None:
@@ -57,6 +57,10 @@ class CloudConsentRequired(PermissionError):
             "Enable 'Allow cloud AI requests' in Settings \u2192 Privacy "
             "to send data to external APIs. Your data will leave this device."
         )
+
+
+# Backwards-compat alias for callers that imported the original name.
+CloudConsentRequired = CloudConsentRequiredError
 
 
 # Module-level consent flag — shared across all FrontierClient instances.

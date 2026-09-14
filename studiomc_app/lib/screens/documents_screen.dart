@@ -198,7 +198,6 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     for (final path in paths) {
       final file = File(path);
       final name = path.split('/').last;
-      final ext = name.split('.').last.toLowerCase();
       final size = file.lengthSync();
 
       final platformFile = PlatformFile(
@@ -385,6 +384,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (confirmed != true) return;
 
     try {
+      if (!mounted) return;
       final api = context.read<ApiClient>();
       final db = context.read<DatabaseService>();
 
@@ -492,6 +492,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
     if (name == null || name.isEmpty) return;
 
     try {
+      if (!mounted) return;
       final api = context.read<ApiClient>();
 
       if (api.isAvailable) {
@@ -500,6 +501,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           setState(() => _collections.insert(0, collection));
         }
       } else {
+        if (!mounted) return;
         // Save locally
         final db = context.read<DatabaseService>();
         final id = 'col-${DateTime.now().millisecondsSinceEpoch}';
@@ -926,8 +928,6 @@ class _DocumentCardWithActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return GestureDetector(
       onSecondaryTapUp: (details) {
         _showContextMenu(context, details.globalPosition);

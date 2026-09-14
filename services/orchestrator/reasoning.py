@@ -20,21 +20,27 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from common.config import CLARA_PORT, INFERENCE_PORT, LRE_PORT, service_url
+from common.config import (
+    CLARA_PORT,
+    INFERENCE_PORT,
+    LRE_PORT,
+    MCP_PORT,
+    MEMORY_PORT,
+    service_url,
+)
 from common.database import Database
 from common.schemas import (
     Citation,
-    ReasoningMode,
     ReasoningRequest,
     ReasoningResponse,
     TraceStep,
 )
-
 from orchestrator.planner import (
     TOOL_CLARA_ANSWER,
     TOOL_CLARA_QUERY,
     TOOL_GREP,
     TOOL_INFERENCE,
+    TOOL_MCP,
     TOOL_OPEN,
     TOOL_SEARCH,
     TOOL_SUMMARIZE,
@@ -52,6 +58,10 @@ INFERENCE_URL = service_url(INFERENCE_PORT, "/v1/chat/completions")
 CLARA_QUERY_URL = service_url(CLARA_PORT, "/clara/query")
 CLARA_ANSWER_URL = service_url(CLARA_PORT, "/clara/answer")
 LRE_EXECUTE_URL = service_url(LRE_PORT, "/lre/execute")
+MCP_TOOLS_URL = service_url(MCP_PORT, "/v1/tools")
+MCP_CALL_URL = service_url(MCP_PORT, "/v1/tools/call")
+MEMORY_FORMAT_URL = service_url(MEMORY_PORT, "/v1/memories/format")
+MEMORY_EXTRACT_URL = service_url(MEMORY_PORT, "/v1/memories/extract")
 
 # ── Budget defaults ─────────────────────────────────────────────────
 
@@ -88,6 +98,10 @@ class _RunState:
     max_retrieved_tokens: int = 8_000
     wall_clock_limit: float = 20.0
 
+    # Identity / context for downstream services (memory, MCP, audit).
+    chat_id: str | None = None
+    memory_block: str = ""
+
 
 # ── Public entry point ──────────────────────────────────────────────
 
@@ -106,9 +120,16 @@ async def run_reasoning(request: ReasoningRequest) -> ReasoningResponse:
         max_depth=int(budgets.get("max_depth", 2)),
         max_retrieved_tokens=int(budgets.get("max_retrieved_tokens", 8_000)),
         wall_clock_limit=wall_limit,
+        chat_id=request.chat_id,
     )
 
     async with httpx.AsyncClient() as http:
+        # Inject persistent memory before planning so the planner can
+        # condition on what we already know about the user.
+        state.memory_block = await _fetch_memory_block(
+            request.user_query, request.chat_id, http
+        )
+
         plan = await make_plan(request.user_query, mode, http=http)
         logger.info(
             "Plan for chat=%s mode=%s steps=%d rationale=%s",
@@ -249,6 +270,7 @@ def _observe(result: str, tool: str, state: _RunState) -> None:
         TOOL_GREP,
         TOOL_SUMMARIZE,
         TOOL_TABLE_EXTRACT,
+        TOOL_MCP,
     ):
         # Count towards retrieved token budget
         approx_tokens = len(result) // _CHARS_PER_TOKEN
@@ -282,7 +304,119 @@ async def _dispatch_tool(
     if tool in (TOOL_SEARCH, TOOL_OPEN, TOOL_GREP, TOOL_SUMMARIZE, TOOL_TABLE_EXTRACT):
         return await _call_lre(tool, params, http)
 
+    if tool == TOOL_MCP:
+        return await _call_mcp_tool(params, state, http)
+
     return f"[unknown tool: {tool}]"
+
+
+# ── Memory integration ─────────────────────────────────────────────
+
+
+async def _fetch_memory_block(
+    query: str,
+    chat_id: str | None,
+    http: httpx.AsyncClient,
+) -> str:
+    """Fetch a formatted memory context block. Best-effort, never raises."""
+    body = {"query": query, "scope_id": chat_id, "limit": 8}
+    try:
+        resp = await http.post(MEMORY_FORMAT_URL, json=body, timeout=2.0)
+    except httpx.HTTPError:
+        return ""
+    if resp.status_code != 200:
+        return ""
+    payload = resp.json() if resp.content else {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    text = data.get("text") or ""
+    return str(text)
+
+
+async def trigger_memory_extraction(
+    chat_id: str | None,
+    user_message: str,
+    assistant_message: str,
+) -> None:
+    """Fire-and-forget: ask the memory service to extract & store memories.
+
+    Called by the chat layer after each assistant turn. We isolate the
+    extractor in its own service so a slow LLM pass never blocks the
+    main reasoning loop.
+    """
+    body = {
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+        "chat_id": chat_id,
+        "auto_save": True,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            await client.post(MEMORY_EXTRACT_URL, json=body)
+    except Exception:
+        logger.debug("Memory extraction trigger failed", exc_info=True)
+
+
+# ── MCP integration ────────────────────────────────────────────────
+
+
+async def available_mcp_tools(http: httpx.AsyncClient | None = None) -> list[dict]:
+    """Return the live MCP tool catalogue (best-effort, never raises).
+
+    Used by the planner to expose third-party tools in the LLM prompt
+    and by the chat layer to render a tool palette. Always returns a
+    list — empty when the MCP service is unreachable.
+    """
+    own_http = http is None
+    client = http or httpx.AsyncClient(timeout=3.0)
+    try:
+        resp = await client.get(MCP_TOOLS_URL)
+        if resp.status_code != 200:
+            return []
+        body = resp.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        return list(data) if isinstance(data, list) else []
+    except Exception:
+        logger.debug("MCP tool list unavailable", exc_info=True)
+        return []
+    finally:
+        if own_http:
+            await client.aclose()
+
+
+async def _call_mcp_tool(
+    params: dict,
+    state: _RunState,
+    http: httpx.AsyncClient,
+) -> str:
+    """Invoke a tool from a registered MCP server via the broker."""
+    body = {
+        "server_id": params.get("server_id"),
+        "tool_name": params.get("tool_name"),
+        "arguments": params.get("arguments") or {},
+        "chat_id": getattr(state, "chat_id", None),
+        "actor": "orchestrator",
+    }
+    if not body["server_id"] or not body["tool_name"]:
+        return "[mcp: missing server_id or tool_name]"
+    try:
+        resp = await http.post(MCP_CALL_URL, json=body)
+    except httpx.HTTPError as exc:
+        return f"[mcp transport error: {exc}]"
+    if resp.status_code >= 400:
+        return f"[mcp http {resp.status_code}: {resp.text[:200]}]"
+    payload = resp.json()
+    result = payload.get("data") if isinstance(payload, dict) else None
+    # MCP tool results are typically {"content": [{"type": "text", "text": "..."}]}.
+    if isinstance(result, dict) and "content" in result:
+        chunks: list[str] = []
+        for item in result.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "text":
+                chunks.append(str(item.get("text", "")))
+        if chunks:
+            return "\n".join(chunks)
+    return json.dumps(result) if result is not None else ""
 
 
 # ── Inference ───────────────────────────────────────────────────────
@@ -296,6 +430,11 @@ async def _call_inference(
     """Call the local inference service with accumulated context."""
 
     messages: list[dict[str, str]] = []
+
+    # Long-term memory always goes first when present so the model
+    # treats it as foundational context, not retrieved evidence.
+    if state.memory_block:
+        messages.append({"role": "system", "content": state.memory_block})
 
     # If we have retrieved context, inject it as a system message
     if state.context_chunks:

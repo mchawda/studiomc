@@ -9,22 +9,18 @@ All routes are prefixed with /lre and are internal-only
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from common.schemas import (
-    Citation,
     LREGrepRequest,
     LREOpenRequest,
     LRESearchRequest,
     LRESummarizeRequest,
     LRETableExtractRequest,
-    TraceStep,
 )
-
 from lre.sandbox import (
     BudgetExceeded,
     SecurityViolation,

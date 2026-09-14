@@ -39,7 +39,7 @@ class InferenceService {
     try {
       final body = <String, dynamic>{
         'messages': messages,
-        if (model != null) 'model': model,
+        'model': ?model,
         'stream': stream,
       };
       final data = await _api.post('/v1/chat/completions', body: body);
@@ -119,7 +119,7 @@ class InferenceService {
     }
     _activeSocket!.add(jsonEncode({
       'messages': messages,
-      if (mode != null) 'mode': mode,
+      'mode': ?mode,
     }));
   }
 

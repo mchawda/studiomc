@@ -27,6 +27,7 @@ import 'package:studiomc_app/widgets/chat/empty_state.dart';
 import 'package:studiomc_app/widgets/chat/groundedness_meter.dart';
 import 'package:studiomc_app/widgets/chat/memory_toggle.dart';
 import 'package:studiomc_app/widgets/chat/message_bubble.dart';
+import 'package:studiomc_app/widgets/shell/command_palette.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? chatId;
@@ -83,7 +84,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String _chatTitle = 'New Chat';
   bool _isPinned = false;
   String _modelName = '';
-  SpeedRating _speedRating = SpeedRating.ok;
+  final SpeedRating _speedRating = SpeedRating.ok;
   double _tokPerS = 0;
   final Stopwatch _streamStopwatch = Stopwatch();
   int _ttftMs = 0;
@@ -177,15 +178,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _handlePresetChanged(PresetMode preset) {
-    setState(() => _selectedPreset = preset);
-    // Persist per conversation (fire-and-forget)
-    if (_chatId.isNotEmpty) {
-      final db = context.read<DatabaseService>();
-      db.setSetting('chat_preset_$_chatId', preset.name);
-    }
-  }
-
   Future<void> _loadData() async {
     final db = context.read<DatabaseService>();
     final api = context.read<ApiClient>();
@@ -232,6 +224,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // 3) Backend inference service fallback
       if (_modelName.isEmpty && api.isAvailable) {
         try {
+          if (!mounted) return;
           final inference = context.read<InferenceService>();
           final models = await inference.getModels();
           if (models.isNotEmpty) {
@@ -277,6 +270,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       // Proactively warn if no backend is available
       if (!isMobile && _modelName.isEmpty) {
+        if (!mounted) return;
         final bundled = context.read<BundledInferenceService>();
         final local = context.read<LocalInferenceService>();
         if (!bundled.available && !local.available) {
@@ -589,7 +583,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'content': text,
         'tokens': text.split(' ').length,
         'created_at': DateTime.now().toIso8601String(),
-        if (parentMsgId != null) 'parent_message_id': parentMsgId,
+        'parent_message_id': ?parentMsgId,
         if (images.isNotEmpty) 'images_json': images.join('||SEP||'),
       });
 
@@ -1038,28 +1032,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Create a branch from a specific message by re-sending from that point.
-  void _branchFromMessage(Message message) {
-    if (_isStreaming) return;
-
-    // Find the index of this message
-    final idx = _messages.indexOf(message);
-    if (idx < 0) return;
-
-    // Get the last user message up to this point
-    Message? lastUserMsg;
-    for (int i = idx; i >= 0; i--) {
-      if (_messages[i].role == MessageRole.user) {
-        lastUserMsg = _messages[i];
-        break;
-      }
-    }
-
-    if (lastUserMsg != null) {
-      _sendMessage(lastUserMsg.content);
-    }
-  }
-
   void _regenerateLastResponse() {
     if (_isStreaming) return;
 
@@ -1132,7 +1104,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final citations = result['citations'] as List<dynamic>? ?? [];
       final groundednessValue = (result['groundedness'] as num?)?.toDouble() ?? 0.0;
       final trace = result['trace'] as List<dynamic>? ?? [];
-      final metrics = result['metrics'] as Map<String, dynamic>? ?? {};
       final tokenCount = (answer.split(' ').length);
 
       // Update citations, groundedness, and trace in state
@@ -1620,8 +1591,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
           const Spacer(),
 
-          // Right side: panel toggle
-          if (!isMobile)
+          if (!isMobile) ...[
+            _buildSearchHint(theme),
+            const SizedBox(width: 6),
             IconButton(
               icon: Icon(
                 showPanel
@@ -1638,7 +1610,61 @@ class _ChatScreenState extends State<ChatScreen> {
                     : theme.colorScheme.secondary,
               ),
             ),
+          ],
         ],
+      ),
+    );
+  }
+
+  /// Compact "Search · ⌘K" affordance — gives the command palette a
+  /// permanent, discoverable home in the top bar without taking up
+  /// real estate. Clicking it opens the same dialog as the keyboard
+  /// shortcut.
+  Widget _buildSearchHint(ThemeData theme) {
+    final fg = theme.colorScheme.onSurface;
+    final isMac = Theme.of(context).platform == TargetPlatform.macOS;
+    return InkWell(
+      onTap: () => CommandPalette.show(context),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: theme.dividerColor),
+          borderRadius: BorderRadius.circular(8),
+          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.search_rounded, size: 14, color: fg.withValues(alpha: 0.7)),
+            const SizedBox(width: 6),
+            Text(
+              'Search',
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                color: fg.withValues(alpha: 0.7),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: theme.dividerColor),
+              ),
+              child: Text(
+                isMac ? '⌘K' : 'Ctrl K',
+                style: GoogleFonts.jetBrainsMono(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                  color: fg.withValues(alpha: 0.55),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

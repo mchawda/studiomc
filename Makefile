@@ -11,10 +11,11 @@
 # ══════════════════════════════════════════════════════════════════════════
 
 .PHONY: help dev services flutter \
+        fetch-llama-server build-pro-pack \
         build-services build-app build-macos build-linux \
         build-ios build-android \
         release-macos release-linux \
-        clean clean-services clean-flutter \
+        clean clean-services clean-flutter clean-llama clean-pro-pack \
         check-deps
 
 # Default target
@@ -28,8 +29,10 @@ help:
 	@echo "  make flutter          Start Flutter app only (hot-reload)"
 	@echo ""
 	@echo "Build:"
-	@echo "  make build-services   Bundle Python services (PyInstaller)"
-	@echo "  make build-app        Build services + Flutter app"
+	@echo "  make fetch-llama-server  Download llama-server binary into services/bin/"
+	@echo "  make build-pro-pack      Build the optional Pro pack tarball (~1 GB)"
+	@echo "  make build-services      Bundle Python services (PyInstaller; auto fetches llama-server)"
+	@echo "  make build-app           Build services + Flutter app"
 	@echo "  make build-macos      Full macOS build with embedded Python"
 	@echo "  make build-linux      Full Linux build with embedded Python"
 	@echo "  make build-ios        Build iOS app (no Python backend)"
@@ -78,7 +81,13 @@ endif
 
 # ── Build ────────────────────────────────────────────────────────────────
 
-build-services:
+fetch-llama-server:
+	bash scripts/build/fetch_llama_server.sh
+
+build-pro-pack:
+	bash scripts/build/build_pro_pack.sh
+
+build-services: fetch-llama-server
 	bash scripts/build/build_services.sh
 
 build-app: build-services
@@ -122,6 +131,14 @@ clean-services:
 clean-flutter:
 	@echo "Cleaning Flutter build…"
 	@cd studiomc_app && flutter clean
+
+clean-llama:
+	@echo "Cleaning llama-server binaries…"
+	@rm -rf services/bin/
+
+clean-pro-pack:
+	@echo "Cleaning Pro pack build artifacts…"
+	@rm -rf dist/pro-pack/
 
 # ── Dependency check ─────────────────────────────────────────────────────
 

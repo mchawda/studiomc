@@ -96,7 +96,7 @@ class ModelCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (trailing != null) trailing!,
+                  ?trailing,
                 ],
               ),
               if (isDownloading && model.downloadProgress != null) ...[

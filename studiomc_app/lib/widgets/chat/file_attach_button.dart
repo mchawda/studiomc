@@ -58,8 +58,6 @@ class _UploadEntry {
   _UploadEntry({
     required this.file,
     this.state = _UploadState.pending,
-    this.documentId,
-    this.errorMessage,
   });
 }
 

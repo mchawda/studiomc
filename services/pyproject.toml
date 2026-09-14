@@ -6,6 +6,16 @@ name = "studiomc-services"
 version = "0.1.0"
 description = "Studiomc backend services — inference, model management, documents, CLaRa, LRE"
 requires-python = ">=3.11"
+
+# ─────────────────────────────────────────────────────────────────────────
+# CORE dependencies — shipped in the small (~80 MB) base bundle that every
+# user downloads. These must NOT pull in PyTorch, transformers, peft, MLX,
+# sentence-transformers, llama-cpp-python, or any other heavy ML library.
+#
+# Built-in inference is provided by the `llama-server` sidecar binary
+# (precompiled llama.cpp), wrapped over HTTP. Heavy ML lives in the
+# optional Pro pack below.
+# ─────────────────────────────────────────────────────────────────────────
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -14,30 +24,52 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "aiofiles>=24.1.0",
     "httpx>=0.28.0",
-    "huggingface-hub>=0.27.0",
     "PyPDF2>=3.0.0",
     "python-multipart>=0.0.18",
-    "tiktoken>=0.8.0",
     "numpy>=1.26.0",
     "psutil>=6.0.0",
     "platformdirs>=4.3.0",
 ]
 
 [project.optional-dependencies]
-inference = [
+# ─────────────────────────────────────────────────────────────────────────
+# PRO pack — downloaded on first use of training, SpliceLLM out-of-core
+# inference, or neural CLaRa retrieval. Installed into a separate venv at
+# ``~/Library/Application Support/Studiomc/pro-env/`` (macOS) so the core
+# bundle stays small and code-signed cleanly.
+# ─────────────────────────────────────────────────────────────────────────
+pro = [
+    # Core ML stack
     "torch>=2.2.0",
     "safetensors>=0.4.0",
     "transformers>=4.46.0",
     "accelerate>=1.2.0",
     "peft>=0.13.0",
     "sentencepiece>=0.2.0",
+    # Neural CLaRa retrieval (sentence-transformers training is a Pro feature)
     "sentence-transformers>=3.3.0",
-    "llama-cpp-python>=0.3.0",
+    # Token counting (only needed when generating training datasets)
+    "tiktoken>=0.8.0",
+    # Direct HF Hub uploads from the export pipeline
+    "huggingface-hub>=0.27.0",
 ]
+
+# Apple Silicon GPU acceleration — installed alongside ``pro`` on Macs
 mlx = [
     "mlx>=0.22.0",
     "mlx-lm>=0.22.0",
 ]
+
+# Convenience: install the full Pro pack with MLX in one go
+pro-mlx = [
+    "studiomc-services[pro,mlx]",
+]
+
+# Backwards-compat alias (old build scripts may still reference [inference])
+inference = [
+    "studiomc-services[pro]",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
@@ -68,6 +100,30 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
+# ``import torch.nn.functional as F`` is the universal PyTorch idiom and
+# mirrors what every PyTorch tutorial, paper, and downstream library does.
+# Forcing lowercase here would buy nothing and break readability.
+ignore = ["N812"]
+
+[tool.ruff.lint.per-file-ignores]
+# Service entry points and inference internals must call
+# ``sys.path.insert(0, ...)`` before any project-relative imports so the
+# bundled ``bundle_entry.py`` and dev-mode ``python service/app.py``
+# invocations both resolve. That intentionally triggers E402
+# ("module-level import not at top of file"); silencing it only on these
+# well-known shims keeps the rest of the codebase strict.
+"*/app.py" = ["E402"]
+"*/routes.py" = ["E402"]
+"bundle_entry.py" = ["E402"]
+"inference/backends/*.py" = ["E402"]
+"inference/core/memory_guard.py" = ["E402"]
+"inference/router.py" = ["E402"]
+"inference/engine.py" = ["E402"]
+"inference/streaming.py" = ["E402"]
+"training/trainer.py" = ["E402"]
+"training/mlx_trainer.py" = ["E402"]
+# Tests use loose conventions (constants in lowercase fixtures, etc.).
+"tests/*" = ["N802", "N803", "N806"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

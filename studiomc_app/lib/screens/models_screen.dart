@@ -537,7 +537,7 @@ class _ModelsScreenState extends State<ModelsScreen> {
         );
       }
 
-      debugPrint('[discover] Download complete: $filePath (${receivedBytes} bytes)');
+      debugPrint('[discover] Download complete: $filePath ($receivedBytes bytes)');
     } catch (e) {
       // Clean up partial file
       if (file.existsSync()) {

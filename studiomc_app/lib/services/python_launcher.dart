@@ -111,7 +111,7 @@ class PythonLauncher {
   int? get pid => _process?.pid;
 
   /// The URL where the supervisor is expected to be reachable.
-  String get supervisorUrl => '${ServiceUrls.supervisor}';
+  String get supervisorUrl => ServiceUrls.supervisor;
 
   // ── Public API ──────────────────────────────────────────────────────────
 

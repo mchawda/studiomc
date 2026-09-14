@@ -42,21 +42,28 @@ _SERVICES_DIR = str(Path(__file__).resolve().parent.parent)
 if _SERVICES_DIR not in sys.path:
     sys.path.insert(0, _SERVICES_DIR)
 
-from inference.engine import GenerationMetrics, InferenceEngine
 from inference.backends import (
     BackendClient,
     BackendInfo,
-    UnifiedModel,
-    OllamaClient,
-    LMStudioClient,
-    StudiomcClient,
-    LlamaCppClient,
     FrontierClient,
+    LlamaCppClient,
+    LlamaServerClient,
+    LMStudioClient,
     MLXClient,
+    OllamaClient,
+    StudiomcClient,
+    UnifiedModel,
 )
-from inference.core.loader import safe_switch, SwitchResult
-from inference.core.memory_guard import MemoryGuard
 from inference.core.adapter_loader import AdapterLoader
+from inference.core.memory_guard import MemoryGuard
+from inference.core.switch_types import SwitchResult
+from inference.engine import InferenceEngine
+from inference.engine_types import GenerationMetrics
+
+# ``safe_switch`` lives in ``inference.core.loader``, which imports torch
+# at module top. We import it lazily (inside the SpliceLLM switch path)
+# so the Core bundle — which uses Ollama / LM Studio / llama-server only
+# — never pays the PyTorch startup cost. See SPLIT_BUNDLE.md.
 
 logger = logging.getLogger("inference.router")
 
@@ -83,8 +90,18 @@ class InferenceRouter:
 
     # Backend priority order (first online backend with the model wins).
     # Local backends always come before cloud.
-    # MLX is preferred over llamacpp on Apple Silicon for GPU acceleration.
-    BACKEND_PRIORITY = ["ollama", "lmstudio", "mlx", "llamacpp", "studiomc"]
+    # On Apple Silicon, MLX is preferred when the Pro pack is installed.
+    # ``llama_server`` (built-in C++ sidecar) is the default GGUF runtime;
+    # ``llamacpp`` (Python bindings, Pro pack only) is kept as a fallback for
+    # users who deliberately installed it.
+    BACKEND_PRIORITY = [
+        "ollama",
+        "lmstudio",
+        "mlx",
+        "llama_server",
+        "llamacpp",
+        "studiomc",
+    ]
 
     def __init__(self, engine: InferenceEngine) -> None:
         self._engine = engine
@@ -103,10 +120,14 @@ class InferenceRouter:
         # Phase 4: Adapter management
         self._adapter_loader = AdapterLoader()
 
-        # Always register the built-in backends
+        # Always register the built-in backends. ``llama_server`` is the
+        # new default GGUF runtime; the Python ``llamacpp`` backend stays
+        # registered so legacy installs that already have llama-cpp-python
+        # in the venv keep working until they uninstall it.
         self._backends["ollama"] = OllamaClient()
         self._backends["lmstudio"] = LMStudioClient()
         self._backends["mlx"] = MLXClient()
+        self._backends["llama_server"] = LlamaServerClient()
         self._backends["llamacpp"] = LlamaCppClient()
         self._backends["studiomc"] = StudiomcClient(engine)
 
@@ -219,21 +240,24 @@ class InferenceRouter:
                 ", ".join(online) if online else "(none)",
             )
 
-            # Start memory monitor
+            # Start memory monitor with an async callback so the unload
+            # is awaited on the running loop instead of being scheduled
+            # via the deprecated get_event_loop() path.
             self._memory_guard.start_monitor(
-                unload_callback=self._emergency_unload_sync,
+                unload_callback=self._emergency_unload_async,
             )
 
             return results
 
-    def _emergency_unload_sync(self) -> None:
-        """Synchronous wrapper for emergency model unload (called by MemoryGuard)."""
+    async def _emergency_unload_async(self) -> None:
+        """Async callback invoked by MemoryGuard under critical pressure.
+
+        Runs on the same event loop as the monitor task, so we can simply
+        await the engine. Errors are logged but never re-raised — a failed
+        unload should not crash the monitor loop.
+        """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._engine.unload_model())
-            else:
-                loop.run_until_complete(self._engine.unload_model())
+            await self._engine.unload_model()
         except Exception as e:
             logger.error("Emergency unload failed: %s", e)
 
@@ -507,7 +531,8 @@ class InferenceRouter:
                 error=f"OOM prevention: {preflight.message}. {preflight.suggestion or ''}",
             )
 
-        # Crash-proof switch
+        # Crash-proof switch — lazy-import so Core (no torch) doesn't pay the cost.
+        from inference.core.loader import safe_switch  # noqa: PLC0415
         from_model = self._engine.active_model_id
         result = await safe_switch(
             self._engine, from_model, model_id, model_path

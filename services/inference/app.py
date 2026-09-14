@@ -38,8 +38,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from common.config import INFERENCE_PORT, SERVICE_HOST, ensure_dirs
 from common.database import Database
-
+from common.fastapi_pro_pack import install_pro_pack_handler
 from inference.engine import InferenceEngine
+from inference.llama_server_sidecar import get_sidecar
 from inference.router import InferenceRouter
 from inference.routes import router, set_router
 
@@ -85,6 +86,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Inference Service shutting down")
     await inference_router.close()
+
+    # Make sure the llama-server sidecar (if it ever spawned) is stopped
+    # before we exit. The supervisor SIGTERMs us — it cannot reach the
+    # native child directly because that's its own process group.
+    try:
+        sidecar = await get_sidecar()
+        await sidecar.stop()
+    except Exception:
+        logger.exception("Error stopping llama-server sidecar on shutdown")
 
 
 # ── Auth Middleware ────────────────────────────────────────────────────
@@ -171,6 +181,9 @@ app.add_middleware(
 
 # API key auth for external tools (Cursor, Claude Code, etc.)
 app.add_middleware(ApiKeyAuthMiddleware)
+
+# Map ProPackRequiredError → 412 with structured payload (see SPLIT_BUNDLE.md)
+install_pro_pack_handler(app)
 
 # Mount routes
 app.include_router(router)

@@ -212,7 +212,6 @@ class SpeculativeDecoder:
             raise RuntimeError("Draft engine not available")
 
         n_spec = self.num_speculative_tokens
-        device = target_engine.device
 
         # ── Stage 1: Draft generation ────────────────────────────────
         t_draft = time.perf_counter()

@@ -13,6 +13,8 @@ import 'services/api_client.dart';
 import 'services/bundled_inference_service.dart';
 import 'services/database_service.dart';
 import 'services/inference_service.dart';
+import 'services/mcp_service.dart';
+import 'services/memory_service.dart';
 import 'services/mobile_inference_service.dart';
 import 'services/orchestrator_service.dart';
 import 'services/process_launcher.dart';
@@ -92,8 +94,17 @@ void main() async {
     // Ollama check is fast and independent of the bundled backend
     await localInference.init(preferredModel: settingsService.activeModelId);
 
-    // Bundled inference has its own wait + retry loop
-    bundledInference.init(preferredModel: settingsService.activeModelId);
+    // Bundled inference has its own wait + retry loop. Capture the future
+    // so init errors surface in the logs instead of being silently dropped
+    // by the unawaited fire-and-forget call.
+    bundledInference
+        .init(preferredModel: settingsService.activeModelId)
+        .then((ok) {
+          debugPrint('[main] BundledInferenceService.init completed (ok=$ok)');
+        })
+        .catchError((e, st) {
+          debugPrint('[main] BundledInferenceService.init error: $e\n$st');
+        });
 
     // Ensure backend launch errors are logged, not silently dropped
     backendFuture.catchError((e) {
@@ -113,6 +124,8 @@ void main() async {
   final documentService = DocumentService();
   final hardwareService = HardwareService(supervisorApi);
   final modelManagerService = ModelManagerService(modelManagerApi);
+  final mcpService = McpService();
+  final memoryService = MemoryService();
 
   final router = buildAppRouter(settingsService);
 
@@ -127,6 +140,8 @@ void main() async {
         Provider<ModelManagerService>.value(value: modelManagerService),
         Provider<SupervisorService>.value(value: supervisorService),
         Provider<DocumentService>.value(value: documentService),
+        Provider<McpService>.value(value: mcpService),
+        Provider<MemoryService>.value(value: memoryService),
         ChangeNotifierProvider<SettingsService>.value(value: settingsService),
         ChangeNotifierProvider<BundledInferenceService>.value(
             value: bundledInference),

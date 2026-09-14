@@ -19,12 +19,9 @@ from fastapi import APIRouter, HTTPException
 
 from common.database import Database
 from common.schemas import (
-    Citation,
     ReasoningRequest,
     ReasoningResponse,
-    TraceStep,
 )
-
 from orchestrator.reasoning import run_reasoning
 
 logger = logging.getLogger("orchestrator.routes")

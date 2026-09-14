@@ -14,7 +14,6 @@ import 'package:studiomc_app/services/api_client.dart';
 import 'package:studiomc_app/services/database_service.dart';
 import 'package:studiomc_app/services/hardware_service.dart';
 import 'package:studiomc_app/services/supervisor_service.dart';
-import 'package:studiomc_app/services/settings_service.dart';
 
 class PerformanceScreen extends StatefulWidget {
   const PerformanceScreen({super.key});
@@ -104,7 +103,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     } catch (e, st) {
       debugPrint('[perf] FATAL ERROR: $e');
       debugPrint('[perf] Stack: $st');
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Could not load performance data: $e';
+        });
+      }
     }
   }
 
@@ -289,10 +293,36 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final settings = context.watch<SettingsService>();
 
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null && _snapshot == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline,
+                  size: 48, color: theme.colorScheme.error),
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _loadPerformance,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Try again'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     if (_snapshot == null) {
@@ -387,7 +417,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       child: _ColorMetricCard(
                         icon: Icons.memory_rounded,
                         label: 'RAM',
-                        value: '${(snap.ramTotalMb / 1024).toStringAsFixed(0)}',
+                        value: (snap.ramTotalMb / 1024).toStringAsFixed(0),
                         unit: 'GB',
                         color: const Color(0xFF6366F1),
                       ),
@@ -410,8 +440,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         icon: Icons.storage_rounded,
                         label: 'Disk',
                         value: _hardware!.disk.readMbps >= 1000
-                            ? '${(_hardware!.disk.readMbps / 1000).toStringAsFixed(1)}'
-                            : '${_hardware!.disk.readMbps.toStringAsFixed(0)}',
+                            ? (_hardware!.disk.readMbps / 1000).toStringAsFixed(1)
+                            : _hardware!.disk.readMbps.toStringAsFixed(0),
                         unit: _hardware!.disk.readMbps >= 1000 ? 'GB/s' : 'MB/s',
                         color: const Color(0xFF0EA5E9),
                       ),
@@ -548,231 +578,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   }
 }
 
-/// Displays hardware scan information.
-class _HardwareInfoCard extends StatelessWidget {
-  final HardwareScanResult hardware;
-
-  const _HardwareInfoCard({required this.hardware});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.memory_outlined,
-                    size: 20, color: theme.colorScheme.secondary),
-                const SizedBox(width: 8),
-                Text('Hardware',
-                    style: GoogleFonts.spaceGrotesk(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w600,
-                    )),
-              ],
-            ),
-            const SizedBox(height: 16),
-            _HardwareRow(
-              icon: Icons.computer_outlined,
-              label: 'CPU',
-              value: '${hardware.cpuName} (${hardware.cpuCores} cores)',
-            ),
-            _HardwareRow(
-              icon: Icons.sd_storage_outlined,
-              label: 'RAM',
-              value: '${(hardware.ramMb / 1024).toStringAsFixed(1)} GB',
-            ),
-            if (hardware.gpu != null && hardware.gpu!.detected) ...[
-              _HardwareRow(
-                icon: Icons.videocam_outlined,
-                label: 'GPU',
-                value:
-                    '${hardware.gpu!.name} (${(hardware.gpu!.vramMb / 1024).toStringAsFixed(1)} GB VRAM)',
-              ),
-            ],
-            _HardwareRow(
-              icon: Icons.disc_full_outlined,
-              label: 'Storage',
-              value:
-                  '${hardware.disk.type.toUpperCase()} (${hardware.disk.readMbps.toStringAsFixed(0)} MB/s read)',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _HardwareRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _HardwareRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: theme.colorScheme.secondary),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 60,
-            child: Text(label,
-                style: GoogleFonts.inter(
-                  fontSize: 9,
-                  color: theme.colorScheme.secondary,
-                )),
-          ),
-          Expanded(
-            child: Text(value,
-                style: GoogleFonts.inter(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w500,
-                  color: theme.colorScheme.onSurface,
-                )),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Displays the status of backend services.
-class _ServiceStatusCard extends StatelessWidget {
-  final List<ServiceInfo> services;
-
-  const _ServiceStatusCard({required this.services});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.dns_outlined,
-                    size: 20, color: theme.colorScheme.secondary),
-                const SizedBox(width: 8),
-                Text('Services',
-                    style: GoogleFonts.spaceGrotesk(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w600,
-                    )),
-              ],
-            ),
-            const SizedBox(height: 16),
-            ...services.map((svc) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: svc.running
-                              ? const Color(0xFF10B981)
-                              : theme.colorScheme.error.withValues(alpha: 0.6),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(svc.name,
-                            style: GoogleFonts.inter(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w500,
-                              color: theme.colorScheme.onSurface,
-                            )),
-                      ),
-                      Text(
-                        svc.running
-                            ? 'Port ${svc.port}'
-                            : 'Stopped',
-                        style: GoogleFonts.inter(
-                          fontSize: 9,
-                          color: svc.running
-                              ? theme.colorScheme.secondary
-                              : theme.colorScheme.error,
-                        ),
-                      ),
-                      if (svc.version != null) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            'v${svc.version}',
-                            style: GoogleFonts.inter(
-                              fontSize: 9,
-                              color: theme.colorScheme.secondary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                )),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RawNumberRow extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _RawNumberRow({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label,
-              style: GoogleFonts.inter(
-                fontSize: 9,
-                color: theme.colorScheme.secondary,
-              )),
-          Text(value,
-              style: GoogleFonts.inter(
-                fontSize: 9,
-                fontWeight: FontWeight.w600,
-                color: theme.colorScheme.onSurface,
-              )),
-        ],
-      ),
-    );
-  }
-}
 
 /// Engaging placeholder when no benchmark data exists yet.
 class _EmptyPerformanceState extends StatelessWidget {

@@ -76,7 +76,9 @@ CREATE TABLE IF NOT EXISTS documents (
     mime TEXT,
     bytes INTEGER,
     sha256 TEXT,
-    status TEXT NOT NULL DEFAULT 'uploaded' CHECK(status IN ('uploaded', 'extracting', 'chunking', 'indexing', 'ready', 'error')),
+    status TEXT NOT NULL DEFAULT 'uploaded'
+        CHECK(status IN ('uploaded', 'extracting', 'chunking',
+                         'indexing', 'ready', 'error')),
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -198,12 +200,87 @@ CREATE TABLE IF NOT EXISTS api_keys (
     revoked INTEGER NOT NULL DEFAULT 0
 );
 
+-- ── MCP (Model Context Protocol) — third-party tool servers ──────────
+-- Each row registers an MCP server (stdio subprocess or HTTP/SSE
+-- endpoint). The supervisor's MCP service spawns enabled servers,
+-- discovers their tools via JSON-RPC, and exposes the unified tool
+-- catalogue to the orchestrator.
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL DEFAULT 'local',
+    name TEXT NOT NULL,
+    description TEXT,
+    transport TEXT NOT NULL CHECK(transport IN ('stdio', 'http', 'sse')),
+    command TEXT,
+    args_json TEXT,
+    env_json TEXT,
+    url TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    auto_start INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_started_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mcp_tools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    input_schema_json TEXT,
+    discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(server_id, name),
+    FOREIGN KEY(server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE
+);
+
+-- Append-only audit trail for tool invocations (enterprise rule §5).
+CREATE TABLE IF NOT EXISTS mcp_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id TEXT NOT NULL DEFAULT 'local',
+    server_id TEXT,
+    tool_name TEXT,
+    chat_id TEXT,
+    actor TEXT,
+    arguments_json TEXT,
+    result_summary TEXT,
+    error TEXT,
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Persistent memory ───────────────────────────────────────────────
+-- Long-lived facts/preferences/summaries surfaced into the chat
+-- context regardless of conversation. Scope = global (default), chat,
+-- or project. Auto-extracted by an LLM pass after each assistant turn,
+-- editable by the user from Settings → Memory.
+CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL DEFAULT 'local',
+    scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global', 'chat', 'project')),
+    scope_id TEXT,
+    key TEXT,
+    content TEXT NOT NULL,
+    tags TEXT,
+    source_message_id TEXT,
+    confidence REAL DEFAULT 1.0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    embedding BLOB,
+    embed_dims INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY(source_message_id) REFERENCES messages(id) ON DELETE SET NULL
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id);
 CREATE INDEX IF NOT EXISTS idx_benchmarks_model ON benchmarks(model_id);
 CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc ON doc_chunks(document_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chats_updated ON chats(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_created ON mcp_audit(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, scope_id);
+CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned DESC, updated_at DESC);
 """
 
 

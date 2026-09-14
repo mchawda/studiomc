@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,17 +27,14 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 
 if TYPE_CHECKING:
-    from numpy.typing import NDArray
-
-from common.config import INDEXES_DIR, MODELS_DIR
-from common.database import Database
+    pass
 
 from clara.compressor import (
     _USE_SBERT,
     encode_texts,
     get_dims,
-    save_index,
 )
+from common.config import MODELS_DIR
 
 logger = logging.getLogger("clara.trainer")
 
@@ -57,14 +53,14 @@ except ImportError:
     torch = None  # type: ignore[assignment]
 
 try:
-    from sentence_transformers import SentenceTransformer, InputExample, losses  # type: ignore[import-untyped]
+    from sentence_transformers import InputExample, SentenceTransformer, losses  # type: ignore[import-untyped]
 
     _HAS_SBERT_TRAIN = True
 except ImportError:
     _HAS_SBERT_TRAIN = False
 
 try:
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer  # noqa: F401  (capability probe)
 
     _HAS_TRANSFORMERS = True
 except ImportError:

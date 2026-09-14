@@ -154,9 +154,6 @@ class _AdvancedSettingsSectionState extends State<AdvancedSettingsSection> {
   // ── Hardware detection ──
   bool get _isAppleSilicon {
     if (!Platform.isMacOS) return false;
-    // Apple Silicon: arm64 architecture
-    final arch = Platform.version.toLowerCase();
-    // Also check the resolved executable path or environment
     return Platform.resolvedExecutable.contains('arm64') ||
         !Platform.resolvedExecutable.contains('x86_64') &&
             Platform.isMacOS;
@@ -244,15 +241,19 @@ class _AdvancedSettingsSectionState extends State<AdvancedSettingsSection> {
       if (dirPath == null) return;
 
       // Validate: must have config.json (MLX/safetensors format)
+      // AND at least one weights file (weights.npz or *.safetensors).
       final hasConfig = await File('$dirPath/config.json').exists();
       final hasWeights = await File('$dirPath/weights.npz').exists() ||
           await _hasFilesWithExtension(dirPath, '.safetensors');
 
-      if (!hasConfig) {
+      if (!hasConfig || !hasWeights) {
         if (mounted) {
+          final reason = !hasConfig
+              ? 'missing config.json'
+              : 'no weights.npz or .safetensors files';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
-                'Not a valid model folder (missing config.json)',
+                'Not a valid model folder ($reason)',
                 style: GoogleFonts.inter(fontSize: 10)),
             behavior: SnackBarBehavior.floating,
           ));
@@ -474,7 +475,6 @@ class _AdvancedSettingsSectionState extends State<AdvancedSettingsSection> {
     final result = await showDialog<FrontierApiConfig>(
       context: context,
       builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
-        final theme = Theme.of(ctx);
         return AlertDialog(
           title: Text('Add Frontier API',
               style: GoogleFonts.spaceGrotesk(

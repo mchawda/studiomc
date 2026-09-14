@@ -15,7 +15,6 @@ from datetime import datetime
 from common.database import Database
 from common.schemas import AIModel, ModelSource
 
-
 # ── Curated Model Catalog ──
 
 CURATED_MODELS: list[AIModel] = [

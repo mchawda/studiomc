@@ -11,13 +11,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from pathlib import Path
 
 import aiofiles
 
 from common.config import DOCS_DIR
 from common.database import Database
-
 
 # ── Configuration ────────────────────────────────────────────────
 

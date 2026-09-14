@@ -122,19 +122,6 @@ class LocalInferenceService extends ChangeNotifier {
     return name;
   }
 
-  /// Pull a model from Ollama in the background. Non-blocking.
-  Future<void> _pullModel(String tag) async {
-    try {
-      _http.post(
-        Uri.parse('$_ollamaBase/api/pull'),
-        headers: {'content-type': 'application/json'},
-        body: jsonEncode({'name': tag, 'stream': false}),
-      );
-    } catch (e) {
-      debugPrint('[ollama] Pull model $tag failed: $e');
-    }
-  }
-
   /// Pull a model from Ollama and stream progress. Returns a stream
   /// of progress values (0.0-1.0). Completes when done.
   Stream<double> pullModelWithProgress(String tag) async* {

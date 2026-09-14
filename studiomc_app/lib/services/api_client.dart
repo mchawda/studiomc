@@ -27,6 +27,8 @@ class ServiceUrls {
   static const orchestrator = 'http://$_host:8105';
   static const training = 'http://$_host:8106';
   static const dataRecipes = 'http://$_host:8107';
+  static const mcp = 'http://$_host:8108';
+  static const memory = 'http://$_host:8109';
 }
 
 /// Reusable HTTP client for communicating with a single backend service.
@@ -144,6 +146,19 @@ class ApiClient {
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
+  /// PATCH [path] with an optional JSON [body]. Returns decoded JSON object.
+  Future<Map<String, dynamic>> patch(String path,
+      {Map<String, dynamic>? body}) async {
+    final request = http.Request('PATCH', Uri.parse('$baseUrl$path'));
+    request.headers.addAll(_jsonHeaders);
+    if (body != null) request.body = jsonEncode(body);
+    final streamed = await _http.send(request).timeout(_timeout);
+    final response = await http.Response.fromStream(streamed);
+    _checkResponse(response);
+    if (response.body.isEmpty) return <String, dynamic>{};
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
   /// DELETE [path]. Returns decoded JSON object (or empty map).
   Future<Map<String, dynamic>> delete(String path) async {
     final response = await _http
@@ -198,14 +213,27 @@ class ApiClient {
   void _checkResponse(http.Response response) {
     if (response.statusCode >= 200 && response.statusCode < 300) return;
 
-    String message;
+    String message = response.body;
+    Map<String, dynamic>? bodyJson;
     try {
-      final body = jsonDecode(response.body);
-      message = body['detail'] ?? body['error'] ?? response.body;
-    } catch (_) {
-      message = response.body;
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        bodyJson = decoded;
+        message = (decoded['detail'] ?? decoded['error'] ?? decoded['message'] ?? response.body)
+            .toString();
+      }
+    } catch (_) {/* non-JSON body — keep raw */}
+
+    // Pro pack contract: any service can raise 412 + error="pro_pack_required"
+    // (see services/SPLIT_BUNDLE.md). Surface a typed exception so the UI
+    // can pop the install dialog instead of a generic error toast.
+    if (response.statusCode == 412 &&
+        bodyJson != null &&
+        bodyJson['error'] == 'pro_pack_required') {
+      throw ProPackRequiredException.fromJson(bodyJson);
     }
-    throw ApiException(response.statusCode, message);
+
+    throw ApiException(response.statusCode, message, body: bodyJson);
   }
 
   void dispose() {
@@ -220,10 +248,66 @@ class ApiException implements Exception {
   final int statusCode;
   final String message;
 
-  ApiException(this.statusCode, this.message);
+  /// Decoded JSON body when the response was JSON, else `null`.
+  /// Useful for callers that want to inspect a structured error envelope
+  /// (e.g. validation errors, retry hints, etc.) without re-parsing.
+  final Map<String, dynamic>? body;
+
+  ApiException(this.statusCode, this.message, {this.body});
 
   @override
   String toString() => 'ApiException($statusCode): $message';
+}
+
+/// Thrown when any backend service refuses a request because the optional
+/// Studiomc Pro pack (heavy ML stack: PyTorch + transformers + peft +
+/// sentence-transformers + MLX) is not installed or is on the wrong
+/// version. The Flutter UI catches this and shows
+/// [ProPackInstallDialog] instead of a generic error.
+///
+/// The 412 envelope contract is documented in
+/// `services/SPLIT_BUNDLE.md` and produced by
+/// `services/common/fastapi_pro_pack.py`.
+class ProPackRequiredException extends ApiException {
+  /// Which feature triggered the requirement (e.g. `"training"`,
+  /// `"mlx"`, `"splicellm"`). Used to give the user a friendly reason.
+  final String feature;
+
+  /// The Pro pack version this Studiomc build needs.
+  final String requiredVersion;
+
+  /// Currently installed Pro pack version, or `null` if none.
+  final String? currentVersion;
+
+  /// `true` when a Pro pack is installed but on the wrong version.
+  /// (Distinguishes "need to install" from "need to upgrade" in the UI.)
+  final bool needsUpgrade;
+
+  ProPackRequiredException({
+    required this.feature,
+    required this.requiredVersion,
+    required this.currentVersion,
+    required this.needsUpgrade,
+    required String message,
+    Map<String, dynamic>? body,
+  }) : super(412, message, body: body);
+
+  factory ProPackRequiredException.fromJson(Map<String, dynamic> json) {
+    final pack = (json['pro_pack'] as Map<String, dynamic>?) ?? const {};
+    return ProPackRequiredException(
+      feature: (json['feature'] as String?) ?? 'unknown',
+      requiredVersion: (json['required_version'] as String?) ?? 'unknown',
+      currentVersion: pack['version'] as String?,
+      needsUpgrade: pack['needs_upgrade'] == true,
+      message: (json['message'] as String?) ??
+          'This feature requires the Studiomc Pro pack.',
+      body: json,
+    );
+  }
+
+  @override
+  String toString() =>
+      'ProPackRequiredException($feature, need=$requiredVersion, have=${currentVersion ?? "none"})';
 }
 
 // ── Logging helper ────────────────────────────────────────────────────────

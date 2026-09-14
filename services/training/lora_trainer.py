@@ -20,8 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import platform
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,14 +46,14 @@ except ImportError:
 
 try:
     import transformers  # noqa: F811
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     _HAS_TRANSFORMERS = True
 except ImportError:
     transformers = None  # type: ignore[assignment]
 
 try:
-    from peft import LoraConfig, get_peft_model, TaskType
+    from peft import LoraConfig, TaskType, get_peft_model
 
     _HAS_PEFT = True
 except ImportError:

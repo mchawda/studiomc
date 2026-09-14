@@ -9,14 +9,12 @@ Extracted text is written to DOCS_DIR/<doc_id>/extracted.txt.
 from __future__ import annotations
 
 import hashlib
-import shutil
 from pathlib import Path
 
 import aiofiles
 from PyPDF2 import PdfReader
 
 from common.config import DOCS_DIR
-
 
 # Maximum upload size: 100 MB
 MAX_FILE_BYTES = 100 * 1024 * 1024

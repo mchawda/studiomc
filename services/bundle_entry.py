@@ -41,6 +41,7 @@ def _fixup_paths() -> None:
 def _run_supervisor() -> None:
     """Start the supervisor service (default mode)."""
     import uvicorn
+
     from common.config import SERVICE_HOST, SUPERVISOR_PORT
     from supervisor.app import app, manager
 
@@ -66,6 +67,7 @@ def _run_service(name: str) -> None:
     import importlib
 
     import uvicorn
+
     from common.config import ALL_PORTS, SERVICE_HOST
 
     port = ALL_PORTS.get(name)

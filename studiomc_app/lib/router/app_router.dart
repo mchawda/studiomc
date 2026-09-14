@@ -10,6 +10,8 @@ import '../screens/models_screen.dart';
 import '../screens/documents_screen.dart';
 import '../screens/training_screen.dart';
 import '../screens/performance_screen.dart';
+import '../screens/mcp_servers_screen.dart';
+import '../screens/memory_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/settings_service.dart';
 import '../widgets/shell/app_shell.dart';
@@ -79,6 +81,14 @@ GoRouter buildAppRouter(SettingsService settings) {
           GoRoute(
             path: '/settings',
             builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/settings/memory',
+            builder: (context, state) => const MemoryScreen(),
+          ),
+          GoRoute(
+            path: '/settings/mcp',
+            builder: (context, state) => const McpServersScreen(),
           ),
         ],
       ),

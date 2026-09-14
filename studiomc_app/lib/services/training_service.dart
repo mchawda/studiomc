@@ -27,9 +27,9 @@ class TrainingService {
       'base_model_id': baseModelId,
       'adapter_name': adapterName,
       'source_type': sourceType,
-      if (sourceRef != null) 'source_ref': sourceRef,
-      if (extractContent != null) 'extract_content': extractContent,
-      if (personalizationGoal != null) 'goal': personalizationGoal,
+      'source_ref': ?sourceRef,
+      'extract_content': ?extractContent,
+      'goal': ?personalizationGoal,
       if (documentIds != null && documentIds.isNotEmpty) 'document_ids': documentIds,
       if (collectionIds != null && collectionIds.isNotEmpty) 'collection_ids': collectionIds,
     };
@@ -49,7 +49,19 @@ class TrainingService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    // Surface backend error message if available
+    // Pro pack contract: 412 + error="pro_pack_required" → typed exception
+    // so the UI can pop the install dialog (see ApiClient._checkResponse).
+    if (response.statusCode == 412) {
+      try {
+        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+        if (decoded['error'] == 'pro_pack_required') {
+          throw ProPackRequiredException.fromJson(decoded);
+        }
+      } catch (e) {
+        if (e is ProPackRequiredException) rethrow;
+      }
+    }
+
     String detail = 'HTTP ${response.statusCode}';
     try {
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;

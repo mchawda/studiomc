@@ -9,7 +9,6 @@ compressor, and returns the top-k chunks by cosine similarity.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -18,16 +17,15 @@ from typing import Any
 import httpx
 import numpy as np
 
+from clara.compressor import encode_query, load_index
 from common.config import INDEXES_DIR, INFERENCE_PORT, service_url
 from common.database import Database
 from common.schemas import (
+    Citation,
     ClaraAnswerResponse,
     ClaraQueryResult,
-    Citation,
     DocChunk,
 )
-
-from clara.compressor import encode_query, load_index
 
 logger = logging.getLogger("clara.retriever")
 

@@ -28,7 +28,6 @@ from fastapi import FastAPI
 
 from common.config import LRE_PORT, SERVICE_HOST
 from common.database import Database
-
 from lre.routes import router
 
 

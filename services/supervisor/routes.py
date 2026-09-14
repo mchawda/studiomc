@@ -9,16 +9,21 @@ Endpoints for managing child services, querying hardware info, and global search
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sys
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from common.database import Database
+from common.pro_pack import REQUIRED_PRO_VERSION
+from common.pro_pack import get_status as pro_pack_status
+from common.pro_pack_installer import install_pro_pack, uninstall_pro_pack
 from common.schemas import (
     HardwareInfo,
     SearchResponse,
@@ -26,7 +31,6 @@ from common.schemas import (
     ServiceStatus,
     SupervisorStatus,
 )
-
 from supervisor.manager import ProcessManager
 
 router = APIRouter()
@@ -72,12 +76,31 @@ async def status() -> SupervisorStatus:
 async def start_services(
     name: Optional[str] = Query(None, description="Service name, or omit to start all"),
 ) -> list[ServiceStatus]:
-    """Start all services, or a single service by name."""
+    """Start all services, or a single service by name.
+
+    Starting a deferred service (e.g. ``training``) without the Pro pack
+    installed raises :class:`ProPackRequiredError`, which the global
+    handler in :mod:`common.fastapi_pro_pack` converts to HTTP 412 with
+    the ``pro_pack_required`` envelope so the Flutter UI can pop the
+    install dialog.
+    """
     mgr = _mgr()
     if name:
         st = await mgr.start_service(name)
         return [st]
     return await mgr.start_all()
+
+
+@router.post("/services/{name}/touch")
+async def touch_service(name: str) -> dict[str, str]:
+    """Bump the last-activity timestamp for a deferred service.
+
+    Called by the training service on every request so the supervisor's
+    idle-eviction loop doesn't tear it down mid-run. Safe no-op for
+    non-deferred services.
+    """
+    _mgr().touch_service(name)
+    return {"status": "ok", "service": name}
 
 
 @router.post("/stop", response_model=list[ServiceStatus])
@@ -266,6 +289,64 @@ async def search(
     results = results[:limit]
 
     return SearchResponse(query=q, results=results, total=len(results))
+
+
+# ── Pro pack management ──────────────────────────────────────────────
+
+
+class ProPackInstallRequest(BaseModel):
+    """Body for ``POST /api/pro-pack/install``.
+
+    The Flutter UI fetches the release manifest from GitHub Releases,
+    picks the asset for the current platform, and posts back the
+    archive URL + sha256 it found. Doing it client-side keeps the
+    Python supervisor free of GitHub API tokens.
+    """
+
+    archive_url: str
+    sha256: str
+    version: str = REQUIRED_PRO_VERSION
+    manifest_url: str | None = None
+
+
+@router.get("/api/pro-pack/status")
+async def get_pro_pack_status() -> dict:
+    """Report whether the Pro pack is installed and current.
+
+    Returns the same dict surfaced via :class:`ProPackStatus.to_dict`,
+    plus the ``required_version`` this Studiomc build needs. The
+    Flutter UI uses this on startup and before opening the Training
+    screen to decide whether to show the install dialog.
+    """
+    return pro_pack_status().to_dict()
+
+
+@router.post("/api/pro-pack/install")
+async def install_pro_pack_endpoint(req: ProPackInstallRequest) -> StreamingResponse:
+    """Stream Pro pack installation progress as Server-Sent Events.
+
+    Each SSE message body is a JSON-encoded
+    :class:`common.pro_pack_installer.ProgressEvent`. The connection
+    closes after a final ``stage="done"`` or ``stage="error"`` event.
+    """
+
+    async def _events():
+        async for evt in install_pro_pack(
+            archive_url=req.archive_url,
+            expected_sha256=req.sha256,
+            expected_version=req.version,
+            manifest_url=req.manifest_url,
+        ):
+            yield f"data: {json.dumps(evt.to_dict())}\n\n"
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+@router.delete("/api/pro-pack")
+async def remove_pro_pack() -> dict:
+    """Remove the Pro pack from disk (~1 GB reclaimed)."""
+    removed = uninstall_pro_pack()
+    return {"removed": removed, "status": pro_pack_status().to_dict()}
 
 
 # ── API Key Management ───────────────────────────────────────────────
