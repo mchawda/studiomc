@@ -31,6 +31,7 @@ PRO_ONLY_MODULES: set[str] = {
     "mlx",
     "mlx_lm",
     "llama_cpp",
+    "unsloth",
 }
 
 
@@ -82,6 +83,10 @@ CORE_MODULES: list[str] = [
     "inference.router",                      # constructs without torch
     "common.pro_pack",
     "clara.compressor",                      # 3-tier embed (sbert → llama → tfidf)
+    "eval",                                  # grounded-eval scorer (no torch)
+    "eval.scorer",
+    "eval.metrics",
+    "eval.retrieval",
 ]
 
 

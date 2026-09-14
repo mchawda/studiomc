@@ -15,9 +15,48 @@ from datetime import datetime
 from common.database import Database
 from common.schemas import AIModel, ModelSource
 
+# Studiomc 4B is the Autopilot desktop default when hardware fits (~3-6 GB).
+# Keep this id aligned with training.studiomc_model.recipe.SPECIALIZED_MODEL_ID.
+STUDIOMC_4B_ID = "studiomc-4b"
+_DESKTOP_DEFAULT_PARAMS = (3.0, 6.0)
+
+
+def is_studiomc_specialized(model: AIModel) -> bool:
+    """True for Studiomc-branded catalog / registry entries."""
+    mid = (model.id or "").lower()
+    nm = (model.name or "").lower()
+    return mid.startswith("studiomc-") or nm.startswith("studiomc")
+
+
+def is_desktop_default_candidate(model: AIModel) -> bool:
+    """Studiomc 3-6B model Autopilot may pin as the desktop default."""
+    if not is_studiomc_specialized(model):
+        return False
+    params = model.params_billion or 0.0
+    lo, hi = _DESKTOP_DEFAULT_PARAMS
+    return lo <= params <= hi
+
+
 # ── Curated Model Catalog ──
 
 CURATED_MODELS: list[AIModel] = [
+    AIModel(
+        id=STUDIOMC_4B_ID,
+        name="Studiomc 4B",
+        source=ModelSource.hf,
+        source_ref="bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+        params_billion=4.0,
+        quant="Q4_K_M",
+        disk_bytes=2_497_280_736,  # ~2.50 GB Q4_K_M
+        arch="qwen3",
+        context_max=262144,
+        manifest_json=(
+            '{"brand":"studiomc","role":"desktop_default",'
+            '"specialization":["grounded_qa","citations","lre_tools"],'
+            '"base":"Qwen/Qwen3-4B-Instruct-2507",'
+            '"gguf_file":"Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"}'
+        ),
+    ),
     AIModel(
         id="llama-3.2-1b-q4km",
         name="Llama 3.2 1B (Q4_K_M)",

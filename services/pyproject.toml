@@ -54,6 +54,13 @@ pro = [
     "huggingface-hub>=0.27.0",
 ]
 
+# Studiomc 4B Unsloth path (GPU trainers only; never imported by Core)
+unsloth = [
+    "unsloth",
+    "datasets>=3.0.0",
+    "trl>=0.12.0",
+]
+
 # Apple Silicon GPU acceleration — installed alongside ``pro`` on Macs
 mlx = [
     "mlx>=0.22.0",
@@ -88,7 +95,12 @@ include = [
     "lre*",
     "training*",
     "data_recipes*",
+    "eval*",
 ]
+
+[tool.setuptools.package-data]
+eval = ["data/*.json", "data/*.jsonl"]
+"training.studiomc_model" = ["fixtures/*.jsonl"]
 
 [build-system]
 requires = ["setuptools>=75.0"]

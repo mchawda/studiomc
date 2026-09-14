@@ -27,7 +27,12 @@ from common.schemas import (
     ModelRecommendation,
     SpeedRating,
 )
-from model_manager.registry import CURATED_MODELS, AIModel
+from model_manager.registry import (
+    CURATED_MODELS,
+    AIModel,
+    is_desktop_default_candidate,
+    is_studiomc_specialized,
+)
 
 logger = logging.getLogger("model_manager.autopilot")
 
@@ -58,6 +63,12 @@ _MIN_VIABLE_TOKS = 1.0  # Below 1 tok/s = avoid recommending
 _ADAPTER_ACTIVE_BOOST = 20.0   # Active adapter for matching model
 _ADAPTER_INACTIVE_BOOST = 10.0 # Inactive adapter for matching model
 _ADAPTER_CONTEXT_BOOST = 8.0   # Extra boost when query context matches adapter goal
+
+# Prefer the Studiomc-branded 4B over generic Llama catalog defaults when
+# the model already fits RAM/VRAM (the scorer skipped it if it did not).
+_STUDIOMC_BRAND_BOOST = 16.0
+_STUDIOMC_DEFAULT_BOOST = 22.0
+_DESKTOP_DEFAULT_MIN_RAM = 8 * 1024**3
 
 
 @dataclass
@@ -350,9 +361,19 @@ def recommend(
                 model.name, adapter_bonus, adapter_reason,
             )
 
+        brand_bonus = 0.0
+        if is_studiomc_specialized(model):
+            brand_bonus = _STUDIOMC_BRAND_BOOST
+            ram_ok = available_ram >= _DESKTOP_DEFAULT_MIN_RAM
+            vram_ok = available_vram >= (3 * 1024**3)
+            if is_desktop_default_candidate(model) and (ram_ok or vram_ok or on_gpu):
+                brand_bonus += _STUDIOMC_DEFAULT_BOOST
+                if adapter_reason is None:
+                    adapter_reason = "Studiomc specialized model for cited desktop chat"
+
         total_score = (
             speed_score + quality_score + use_case_score
-            + backend_bonus + adapter_bonus - penalty
+            + backend_bonus + adapter_bonus + brand_bonus - penalty
         )
 
         # ── Step 5: Determine speed rating ──
@@ -397,8 +418,16 @@ def recommend(
             adapter_reason=sm.adapter_reason,
         )
 
-        if sm.predicted_tok_s < _MIN_VIABLE_TOKS:
-            # Too slow — put in overflow
+        branded_ok = (
+            is_desktop_default_candidate(sm.model)
+            and (
+                available_ram >= _DESKTOP_DEFAULT_MIN_RAM
+                or available_vram >= (3 * 1024**3)
+            )
+        )
+        if sm.predicted_tok_s < _MIN_VIABLE_TOKS and not branded_ok:
+            # Too slow — put in overflow. Studiomc 4B stays eligible when
+            # desktop RAM fits; the CPU tok/s heuristic undershoots ~4B.
             rec.recommended = False
             bigger_slower.append(rec)
         elif len(recommended) < 3:
@@ -406,6 +435,10 @@ def recommend(
         else:
             rec.recommended = False
             bigger_slower.append(rec)
+
+    recommended, bigger_slower = _promote_studiomc_desktop_default(
+        recommended, bigger_slower, scored, available_ram, available_vram,
+    )
 
     return AutopilotResult(
         hw_info=hw,
@@ -416,23 +449,81 @@ def recommend(
 
 # ── Helpers ──
 
+def _scored_to_rec(sm: _ScoredModel, *, recommended: bool) -> ModelRecommendation:
+    return ModelRecommendation(
+        model_id=sm.model.id,
+        name=sm.model.name,
+        predicted_tok_per_s=sm.predicted_tok_s,
+        predicted_ttft_ms=sm.predicted_ttft_ms,
+        speed_rating=sm.speed_rating,
+        explanation=sm.explanation,
+        disk_bytes=sm.model.disk_bytes or 0,
+        recommended=recommended,
+        recommended_adapter=sm.adapter_id,
+        adapter_reason=sm.adapter_reason,
+    )
+
+
+def _promote_studiomc_desktop_default(
+    recommended: list[ModelRecommendation],
+    bigger_slower: list[ModelRecommendation],
+    scored: list[_ScoredModel],
+    available_ram: int,
+    available_vram: int,
+) -> tuple[list[ModelRecommendation], list[ModelRecommendation]]:
+    """Pin a viable Studiomc 4B as the first Autopilot pick on desktop-class RAM.
+
+    Does not invent downloads. If the branded model was filtered out (does
+    not fit), the ranked list is unchanged.
+    """
+    ram_ok = available_ram >= _DESKTOP_DEFAULT_MIN_RAM
+    vram_ok = available_vram >= (3 * 1024**3)
+    if not ram_ok and not vram_ok:
+        return recommended, bigger_slower
+
+    branded = [sm for sm in scored if is_desktop_default_candidate(sm.model)]
+    if not branded:
+        return recommended, bigger_slower
+
+    best = branded[0]
+    if recommended and recommended[0].model_id == best.model.id:
+        return recommended, bigger_slower
+
+    promoted = _scored_to_rec(best, recommended=True)
+    rest = [r for r in recommended if r.model_id != best.model.id]
+    new_recommended = [promoted, *rest][:3]
+    kept_ids = {r.model_id for r in new_recommended}
+    overflow = [r for r in recommended if r.model_id not in kept_ids]
+    for r in overflow:
+        r.recommended = False
+    bigger_slower = [
+        r for r in bigger_slower if r.model_id != best.model.id
+    ] + overflow
+    return new_recommended, bigger_slower
+
+
 def _use_case_bonus(model: AIModel, intent: str | None) -> float:
     """Return 0-20 bonus score based on user intent matching model strengths."""
+    branded = is_studiomc_specialized(model)
     if not intent:
-        return 10.0  # neutral
+        return 20.0 if branded else 10.0
 
     intent = intent.lower()
     name = (model.name or "").lower()
     arch = (model.arch or "").lower()
 
     if intent in ("coding", "code", "programming"):
+        if branded:
+            return 16.0
         if "phi" in name or "phi" in arch:
             return 20.0  # Phi excels at coding
         if "qwen" in name:
             return 16.0
         return 10.0
 
-    if intent in ("chat", "conversation", "default"):
+    if intent in ("chat", "conversation", "default", "cited"):
+        if branded:
+            return 20.0
         if "llama" in name:
             return 18.0
         if "mistral" in name:

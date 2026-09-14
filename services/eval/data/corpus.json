@@ -1,0 +1,92 @@
+[
+  {
+    "id": "chk-q3-0",
+    "document_id": "doc-q3",
+    "filename": "q3-earnings.md",
+    "chunk_index": 0,
+    "text": "Helios Robotics Q3 2025 earnings. Revenue was $47.2 million, up 18 percent year over year. North America contributed 61 percent of revenue. The company ended the quarter with $29.4 million in cash.",
+    "token_count": 52,
+    "span": {"start_char": 0, "end_char": 198}
+  },
+  {
+    "id": "chk-q3-1",
+    "document_id": "doc-q3",
+    "filename": "q3-earnings.md",
+    "chunk_index": 1,
+    "text": "Atlas-2 warehouse robots shipped 2140 units in Q3 2025. Gross margin was 34.1 percent. Service contracts covered 71 percent of the installed Atlas-2 fleet.",
+    "token_count": 38,
+    "span": {"start_char": 199, "end_char": 352}
+  },
+  {
+    "id": "chk-q3-2",
+    "document_id": "doc-q3",
+    "filename": "q3-earnings.md",
+    "chunk_index": 2,
+    "text": "Management published Q4 2025 revenue guidance of $51 to $54 million. A hiring freeze applies to the marketing organization through January 2026. No other regional guidance was issued.",
+    "token_count": 42,
+    "span": {"start_char": 353, "end_char": 535}
+  },
+  {
+    "id": "chk-safety-0",
+    "document_id": "doc-safety",
+    "filename": "safety-policy.md",
+    "chunk_index": 0,
+    "text": "Atlas-2 emergency stop policy. The robot must come to a full stop within 0.4 seconds of obstacle detection. Operators recertify on the safety course every 12 months.",
+    "token_count": 38,
+    "span": {"start_char": 0, "end_char": 165}
+  },
+  {
+    "id": "chk-safety-1",
+    "document_id": "doc-safety",
+    "filename": "safety-policy.md",
+    "chunk_index": 1,
+    "text": "Lithium battery packs for Atlas robots must be stored below 30 Celsius. Any safety incident must be reported to the duty officer within 4 hours of discovery.",
+    "token_count": 36,
+    "span": {"start_char": 166, "end_char": 322}
+  },
+  {
+    "id": "chk-board-0",
+    "document_id": "doc-board",
+    "filename": "board-minutes.md",
+    "chunk_index": 0,
+    "text": "The board delayed the Atlas-3 launch from March 2026 to September 2026 because actuator yield stayed below the 92 percent gate. No Atlas-3 list price was approved.",
+    "token_count": 40,
+    "span": {"start_char": 0, "end_char": 164}
+  },
+  {
+    "id": "chk-board-1",
+    "document_id": "doc-board",
+    "filename": "board-minutes.md",
+    "chunk_index": 1,
+    "text": "Directors approved $6.5 million for battery vendor dual-sourcing in fiscal 2026. The vote was unanimous. The committee asked for a supplier shortlist by 15 November 2025.",
+    "token_count": 40,
+    "span": {"start_char": 165, "end_char": 336}
+  },
+  {
+    "id": "chk-vendor-0",
+    "document_id": "doc-vendor",
+    "filename": "vendor-contract.md",
+    "chunk_index": 0,
+    "text": "Helios contracted VoltForge Ltd for 18 months at 40000 cells per month and $12.40 per cell. The contract begins 1 October 2025. No other cell vendor is named in this agreement.",
+    "token_count": 44,
+    "span": {"start_char": 0, "end_char": 176}
+  },
+  {
+    "id": "chk-vendor-1",
+    "document_id": "doc-vendor",
+    "filename": "vendor-contract.md",
+    "chunk_index": 1,
+    "text": "Either party may terminate the VoltForge agreement for convenience with 90 days written notice. On-time delivery SLA is 99.2 percent measured monthly.",
+    "token_count": 32,
+    "span": {"start_char": 177, "end_char": 327}
+  },
+  {
+    "id": "chk-cook-0",
+    "document_id": "doc-cookbook",
+    "filename": "sourdough-notes.md",
+    "chunk_index": 0,
+    "text": "Feed the sourdough starter 1:2:2 at 78 Fahrenheit. Bake the loaf at 450 Fahrenheit for 35 minutes with steam for the first 15 minutes.",
+    "token_count": 36,
+    "span": {"start_char": 0, "end_char": 134}
+  }
+]

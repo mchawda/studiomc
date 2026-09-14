@@ -635,35 +635,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   _RecommendedModel _pickBestModel() {
     if (isMobile) return _pickBestMobileModel();
 
-    if (_ramMb >= 64000) {
+    if (_ramMb >= 8000) {
       return const _RecommendedModel(
-        name: 'Llama 3.1 8B',
-        filename: 'llama-3.2-8b-instruct-q5_k_m.gguf',
+        name: 'Studiomc 4B',
+        filename: 'studiomc-4b-q4_k_m.gguf',
         downloadUrl:
-            'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q5_K_M.gguf',
-        sizeLabel: '~5.7 GB • Q5',
+            'https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+        sizeLabel: '~2.5 GB • Q4',
         speedLabel: 'Fast',
-        explanation: 'High quality model with plenty of room on your machine.',
-      );
-    } else if (_ramMb >= 16000) {
-      return const _RecommendedModel(
-        name: 'Llama 3.1 8B',
-        filename: 'llama-3.2-8b-instruct-q4_k_m.gguf',
-        downloadUrl:
-            'https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
-        sizeLabel: '~4.9 GB • Q4',
-        speedLabel: 'Fast',
-        explanation: 'Best experience for your hardware.',
-      );
-    } else if (_ramMb >= 8000) {
-      return const _RecommendedModel(
-        name: 'Llama 3.2 3B',
-        filename: 'llama-3.2-3b-instruct-q4_k_m.gguf',
-        downloadUrl:
-            'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-        sizeLabel: '~2.0 GB • Q4',
-        speedLabel: 'Fast',
-        explanation: 'Lightweight and fast for your available memory.',
+        explanation:
+            'Studiomc specialized 4B for cited answers. Fits desktop memory.',
       );
     } else {
       return const _RecommendedModel(

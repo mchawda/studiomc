@@ -43,6 +43,18 @@ class _ModelsScreenState extends State<ModelsScreen> {
   // Curated models available to download from Ollama
   static const _curatedModels = <_CuratedEntry>[
     _CuratedEntry(
+      tag: 'studiomc:4b',
+      name: 'Studiomc 4B',
+      params: '4B',
+      description:
+          'Studiomc specialized model. Cited answers, refuses without evidence.',
+      sizeEstimate: '2.5 GB',
+      hfRepo: 'bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF',
+      downloadUrl:
+          'https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+      ggufFilename: 'studiomc-4b-q4_k_m.gguf',
+    ),
+    _CuratedEntry(
       tag: 'llama3.2',
       name: 'Llama 3.2',
       params: '3B',
