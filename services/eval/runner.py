@@ -11,9 +11,11 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 from eval.fixtures import (
@@ -28,7 +30,65 @@ from eval.fixtures import (
 from eval.generator import generate_stub
 from eval.retrieval import retrieve_clara_hash, retrieve_lexical
 from eval.scorer import score_dataset
-from eval.types import CorpusChunk, GoldItem, Prediction, SuiteScore
+from eval.types import CorpusChunk, GoldItem, Prediction, RunMetadata, SuiteScore
+
+# Bump when metric definitions change so stored scores are comparable.
+HARNESS_VERSION = "eval-v0.2"
+
+# Live mode has no real model: the stub generator pastes retrieved spans.
+STUB_MODEL_VERSION = "stub-generator"
+UNKNOWN_MODEL_VERSION = "unknown"
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def input_reference(paths: dict[str, Path]) -> dict[str, dict[str, str | None]]:
+    """Path + sha256 for every input file so a run can be reproduced."""
+    return {
+        name: {"path": str(path), "sha256": _sha256_file(path)}
+        for name, path in paths.items()
+    }
+
+
+def infer_model_version(predictions: Sequence[Prediction]) -> str:
+    """Single model version declared by recorded rows, else ``unknown``.
+
+    Mixed versions are joined with ``+`` so a suite scored across two
+    checkpoints is visibly not a clean measurement.
+    """
+    versions = sorted({p.model_version for p in predictions if p.model_version})
+    if not versions:
+        return UNKNOWN_MODEL_VERSION
+    return "+".join(versions)
+
+
+def build_metadata(
+    *,
+    model_version: str,
+    mode: str,
+    top_k: int,
+    inputs: dict[str, Path],
+    retriever: str | None = None,
+) -> RunMetadata:
+    reference: dict[str, object] = dict(input_reference(inputs))
+    if retriever is not None:
+        reference["retriever"] = retriever
+    return RunMetadata(
+        model_version=model_version,
+        timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        input_reference=reference,
+        harness_version=HARNESS_VERSION,
+        mode=mode,
+        top_k=top_k,
+    )
 
 _COL = (
     ("id", 12),
@@ -88,6 +148,16 @@ def format_table(suite: SuiteScore) -> str:
         f"refusal_unanswerable={suite.refusal_accuracy_unanswerable:.3f}  "
         f"retrieval_recall@k={suite.retrieval_recall_at_k if suite.retrieval_recall_at_k is not None else '-'}"
     )
+    if suite.metadata is not None:
+        meta = suite.metadata
+        lines.append(
+            f"model={meta.model_version}  harness={meta.harness_version}  "
+            f"mode={meta.mode}  at={meta.timestamp}"
+        )
+        for name, ref in sorted(meta.input_reference.items()):
+            if isinstance(ref, dict) and "sha256" in ref:
+                digest = ref.get("sha256") or "-"
+                lines.append(f"input.{name}={ref.get('path')} sha256={str(digest)[:12]}")
     return "\n".join(lines)
 
 
@@ -96,9 +166,13 @@ def run_offline(
     predictions: Sequence[Prediction],
     corpus: Sequence[CorpusChunk],
     k: int,
+    *,
+    metadata: RunMetadata | None = None,
 ) -> SuiteScore:
     attached = [attach_retrieved(p, list(corpus)) for p in predictions]
-    return score_dataset(gold, attached, k=k, corpus=corpus)
+    suite = score_dataset(gold, attached, k=k, corpus=corpus)
+    suite.metadata = metadata
+    return suite
 
 
 def run_live(
@@ -106,6 +180,8 @@ def run_live(
     corpus: Sequence[CorpusChunk],
     k: int,
     retriever: str,
+    *,
+    metadata: RunMetadata | None = None,
 ) -> SuiteScore:
     predictions: list[Prediction] = []
     for item in gold:
@@ -118,7 +194,9 @@ def run_live(
         predictions.append(
             generate_stub(item.id, item.question, retrieved, index_chunks=corpus)
         )
-    return score_dataset(gold, predictions, k=k, corpus=corpus)
+    suite = score_dataset(gold, predictions, k=k, corpus=corpus)
+    suite.metadata = metadata
+    return suite
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -143,6 +221,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="live mode only. clara uses the Core TF-IDF hash encoder, never torch",
     )
     parser.add_argument("--json", action="store_true", help="print SuiteScore JSON instead of a table")
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=None,
+        help="also write the SuiteScore JSON (with run metadata) to this file",
+    )
+    parser.add_argument(
+        "--model-version",
+        type=str,
+        default=None,
+        help="model that produced the predictions; defaults to the recorded rows' model_version",
+    )
     parser.add_argument("--fail-under-grounding", type=float, default=0.0)
     parser.add_argument("--fail-under-refusal", type=float, default=0.0)
     return parser
@@ -154,13 +244,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     corpus = load_corpus(args.corpus)
 
     if args.mode == "live":
-        suite = run_live(gold, corpus, k=args.top_k, retriever=args.retriever)
+        metadata = build_metadata(
+            model_version=args.model_version or STUB_MODEL_VERSION,
+            mode="live",
+            top_k=args.top_k,
+            inputs={"gold": args.gold, "corpus": args.corpus},
+            retriever=args.retriever,
+        )
+        suite = run_live(
+            gold, corpus, k=args.top_k, retriever=args.retriever, metadata=metadata
+        )
     else:
         predictions = load_predictions(args.predictions)
-        suite = run_offline(gold, predictions, corpus, k=args.top_k)
+        metadata = build_metadata(
+            model_version=args.model_version or infer_model_version(predictions),
+            mode="offline",
+            top_k=args.top_k,
+            inputs={
+                "gold": args.gold,
+                "corpus": args.corpus,
+                "predictions": args.predictions,
+            },
+        )
+        suite = run_offline(gold, predictions, corpus, k=args.top_k, metadata=metadata)
 
+    payload = suite.to_dict()
+    if args.json_out is not None:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     if args.json:
-        sys.stdout.write(json.dumps(suite.to_dict(), indent=2) + "\n")
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
     else:
         sys.stdout.write(format_table(suite) + "\n")
 

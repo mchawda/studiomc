@@ -374,3 +374,72 @@ def test_cli_json_roundtrip(capsys: pytest.CaptureFixture[str]) -> None:
     assert payload["n"] == 16
     assert "items" in payload
     assert payload["refusal_accuracy"] == pytest.approx(14 / 16, abs=1e-3)
+
+
+# ── Run metadata (AI output standard: model version, timestamp, inputs) ──
+
+
+def test_offline_run_metadata_lifts_model_version_from_recorded_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.fixtures import DEFAULT_CORPUS, DEFAULT_GOLD, DEFAULT_RECORDED
+    from eval.runner import HARNESS_VERSION, main
+
+    assert main(["--mode", "offline", "--json"]) == 0
+    meta = json.loads(capsys.readouterr().out)["metadata"]
+
+    assert meta["model_version"] == "fixture-handwritten-v1"
+    assert meta["harness_version"] == HARNESS_VERSION
+    assert meta["mode"] == "offline"
+    assert meta["top_k"] == 5
+    # ISO-8601 UTC timestamp.
+    assert meta["timestamp"].endswith("+00:00")
+    ref = meta["input_reference"]
+    assert ref["gold"]["path"] == str(DEFAULT_GOLD)
+    assert ref["corpus"]["path"] == str(DEFAULT_CORPUS)
+    assert ref["predictions"]["path"] == str(DEFAULT_RECORDED)
+    for name in ("gold", "corpus", "predictions"):
+        assert len(ref[name]["sha256"]) == 64
+
+
+def test_model_version_flag_overrides_and_live_uses_stub(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.runner import STUB_MODEL_VERSION, main
+
+    assert main(["--mode", "offline", "--json", "--model-version", "studiomc-4b@Q4_K_M"]) == 0
+    assert json.loads(capsys.readouterr().out)["metadata"]["model_version"] == "studiomc-4b@Q4_K_M"
+
+    assert main(["--mode", "live", "--json"]) == 0
+    meta = json.loads(capsys.readouterr().out)["metadata"]
+    assert meta["model_version"] == STUB_MODEL_VERSION
+    assert meta["mode"] == "live"
+    assert meta["input_reference"]["retriever"] == "lexical"
+    assert "predictions" not in meta["input_reference"]
+
+
+def test_infer_model_version_flags_mixed_checkpoints() -> None:
+    from eval.runner import UNKNOWN_MODEL_VERSION, infer_model_version
+
+    assert infer_model_version([]) == UNKNOWN_MODEL_VERSION
+    assert infer_model_version([Prediction(id="a", answer="x")]) == UNKNOWN_MODEL_VERSION
+    mixed = [
+        Prediction(id="a", answer="x", model_version="m2"),
+        Prediction(id="b", answer="y", model_version="m1"),
+        Prediction(id="c", answer="z", model_version="m1"),
+    ]
+    assert infer_model_version(mixed) == "m1+m2"
+
+
+def test_json_out_writes_structured_report(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
+    from eval.runner import main
+
+    dest = tmp_path / "reports" / "suite.json"
+    assert main(["--mode", "offline", "--json-out", str(dest)]) == 0
+    table = capsys.readouterr().out
+    assert "model=fixture-handwritten-v1" in table
+    assert "input.gold=" in table
+    payload = json.loads(dest.read_text(encoding="utf-8"))
+    assert payload["metadata"]["model_version"] == "fixture-handwritten-v1"
+    assert payload["n"] == 16
+    assert {item["id"] for item in payload["items"]} == {g.id for g in load_gold()}

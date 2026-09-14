@@ -169,11 +169,15 @@ clean-pro-pack:
 	@rm -rf dist/pro-pack/
 
 # ── Grounded-answering eval (no GPU, no torch) ──────────────────────────
+# Uses services/.venv when present, else whatever python3 is on PATH, so
+# a clean checkout can run `make eval` right after `pip install -e services[dev]`.
+
+SERVICES_PY := $(shell if [ -x services/.venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 
 eval:
-	@echo "Running grounded-answering eval harness…"
-	cd services && . .venv/bin/activate && PYTHONPATH=. python -m pytest tests/test_eval_harness.py -q
-	cd services && . .venv/bin/activate && PYTHONPATH=. python -m eval
+	@echo "Running grounded-answering eval harness… (python: $(SERVICES_PY))"
+	cd services && PYTHONPATH=. $(SERVICES_PY) -m pytest tests/test_eval_harness.py -q
+	cd services && PYTHONPATH=. $(SERVICES_PY) -m eval
 
 # ── Dependency check ─────────────────────────────────────────────────────
 
