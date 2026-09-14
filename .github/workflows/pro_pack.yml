@@ -51,7 +51,9 @@ jobs:
             runs-on: macos-14
             platform: macos-arm64
           - label: macOS (Intel)
-            runs-on: macos-15
+            # ``macos-15`` is Apple Silicon; it produced a second macos-arm64
+            # pack that collided with the real one on publish.
+            runs-on: macos-15-intel
             platform: macos-x64
           - label: Linux x64
             runs-on: ubuntu-22.04
@@ -89,6 +91,7 @@ jobs:
       - name: Build Pro pack
         env:
           PRO_PACK_VERSION: ${{ steps.vars.outputs.version }}
+          PRO_PACK_EXPECT_PLATFORM: ${{ matrix.platform }}
           PYTHON_BIN: python${{ env.PYTHON_VERSION }}
         run: bash scripts/build/build_pro_pack.sh
 

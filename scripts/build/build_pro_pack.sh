@@ -44,6 +44,19 @@ case "$UNAME_S/$UNAME_M" in
     *) echo "✗ Unsupported platform: $UNAME_S/$UNAME_M" ; exit 1 ;;
 esac
 
+# CI passes the platform it *thinks* it is building. Refuse to mislabel:
+# the v0.9.9.8 "macOS (Intel)" leg ran on an Apple Silicon runner and
+# produced a second macos-arm64 pack that overwrote the real one.
+if [ -n "${PRO_PACK_EXPECT_PLATFORM:-}" ] && [ "$PRO_PACK_EXPECT_PLATFORM" != "$PLATFORM" ]; then
+    echo "✗ Runner is $PLATFORM but this job is meant to build $PRO_PACK_EXPECT_PLATFORM" >&2
+    echo "  (check the runs-on label: plain macos-15 is Apple Silicon, use macos-15-intel)" >&2
+    exit 1
+fi
+
+# GitHub Releases reject assets of 2 GiB or more. The supervisor downloads
+# the pack as one file, so the archive has to stay under that.
+MAX_ARCHIVE_BYTES=$((2 * 1024 * 1024 * 1024 - 1))
+
 # Pro pack pinned dependency versions. Bumping any of these requires
 # bumping PRO_PACK_VERSION too — the supervisor refuses old packs.
 TORCH_SPEC="torch>=2.2.0,<3.0"
@@ -89,6 +102,15 @@ source "$ENV_DIR/bin/activate"
 python -m pip install --quiet --upgrade pip wheel setuptools
 
 echo "→ Installing core ML stack …"
+# On Linux the default PyPI torch wheel drags in the full CUDA stack
+# (nvidia-*), giving a 5.5 GB venv and a 2.4 GB tar.zst that GitHub
+# Releases refuse (2 GiB asset cap), so the v0.9.9.8 Linux pack never
+# published. Ship the CPU build (~200 MB torch); CUDA users need a
+# separate distribution channel.
+if [ "$UNAME_S" = "Linux" ]; then
+    echo "  (Linux: CPU-only torch wheels)"
+    python -m pip install --quiet --index-url "https://download.pytorch.org/whl/cpu" "$TORCH_SPEC"
+fi
 python -m pip install --quiet \
     "$TORCH_SPEC" \
     "$SAFETENSORS_SPEC" \
@@ -191,6 +213,10 @@ SHA256="$(cat "$SHA_PATH")"
 # ── 8. Manifest JSON ──────────────────────────────────────────────────
 
 ARCHIVE_BYTES="$(wc -c < "$ARCHIVE_PATH" | tr -d ' ')"
+if [ "$ARCHIVE_BYTES" -gt "$MAX_ARCHIVE_BYTES" ]; then
+    echo "✗ $ARCHIVE_PATH is $ARCHIVE_BYTES bytes; GitHub Releases cap assets at 2 GiB" >&2
+    exit 1
+fi
 
 echo "→ Writing manifest …"
 python3 - <<PY > "$MANIFEST_PATH"
