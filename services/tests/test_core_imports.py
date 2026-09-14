@@ -79,6 +79,7 @@ def block_pro_imports(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 SERVICE_PACKAGES: set[str] = {
     "inference", "clara", "common", "documents", "model_manager", "lre",
     "orchestrator", "data_recipes", "mcp", "memory", "supervisor", "eval",
+    "training",
 }
 
 
@@ -123,6 +124,37 @@ CORE_MODULES: list[str] = [
     "memory.app",
     "supervisor.app",
     "supervisor.routes",
+    "eval.runner",                           # CLI entry (python -m eval)
+    "eval.generator",
+    "eval.fixtures",
+    # Studiomc 4B pipeline: public surface + CLI stay torch/unsloth-free.
+    # Only unsloth_trainer.train()/export_gguf() touch the Pro stack.
+    "training.studiomc_model",
+    "training.studiomc_model.cli",
+    "training.studiomc_model.data",
+    "training.studiomc_model.schema",
+    "training.studiomc_model.recipe",
+    "training.studiomc_model.unsloth_trainer",  # graceful: unsloth_available()
+    # Core services the supervisor runs in the bundled interpreter.
+    "mcp",
+    "mcp.broker",
+    "mcp.client",
+    "mcp.routes",
+    "memory",
+    "memory.store",
+    "memory.extractor",
+    "memory.routes",
+    "lre",
+    "lre.tools",
+    "lre.sandbox",
+    "lre.routes",
+    "orchestrator",
+    "orchestrator.planner",
+    "orchestrator.reasoning",
+    "orchestrator.routes",
+    "model_manager.registry",
+    "model_manager.autopilot",
+    "clara.retriever",
 ]
 
 
@@ -132,7 +164,27 @@ def test_core_module_imports_without_pro_pack(
     module_name: str,
 ) -> None:
     """Each Core module must be importable on a Pro-pack-free machine."""
-    importlib.import_module(module_name)
+    # Evict the module (and its children) so the guard sees a real import
+    # even when an earlier test file already loaded it. Restore the
+    # original objects afterwards so other tests keep one module identity
+    # (monkeypatching ``common.pro_pack`` must still reach its importers).
+    evicted: dict[str, object] = {}
+    for cached in list(sys.modules):
+        if cached == module_name or cached.startswith(module_name + "."):
+            evicted[cached] = sys.modules.pop(cached)
+    try:
+        importlib.import_module(module_name)
+    finally:
+        for cached in list(sys.modules):
+            if cached == module_name or cached.startswith(module_name + "."):
+                sys.modules.pop(cached, None)
+        sys.modules.update(evicted)  # type: ignore[arg-type]
+        # Re-point parent package attributes at the restored objects.
+        for name, module in evicted.items():
+            parent_name, _, child = name.rpartition(".")
+            parent = sys.modules.get(parent_name) if parent_name else None
+            if parent is not None:
+                setattr(parent, child, module)
 
 
 def test_inference_engine_constructs_without_torch(

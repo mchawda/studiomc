@@ -19,12 +19,20 @@ from eval.metrics import (
     precision_recall,
 )
 from eval.scorer import aggregate, score_dataset, score_prediction
-from eval.types import GoldItem, ItemScore, Prediction, SourceRef, SuiteScore
+from eval.types import (
+    GoldItem,
+    ItemScore,
+    Prediction,
+    RunMetadata,
+    SourceRef,
+    SuiteScore,
+)
 
 __all__ = [
     "GoldItem",
     "ItemScore",
     "Prediction",
+    "RunMetadata",
     "SourceRef",
     "SuiteScore",
     "aggregate",

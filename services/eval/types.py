@@ -190,6 +190,9 @@ class Prediction:
     retrieved_chunk_ids: list[str] = field(default_factory=list)
     retrieved: list[CorpusChunk] = field(default_factory=list)
     refused: bool | None = None
+    # Model that produced ``answer`` (e.g. "studiomc-4b@Q4_K_M"). Recorded
+    # JSONL may carry this per row; the runner lifts it into RunMetadata.
+    model_version: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Prediction:
@@ -206,7 +209,35 @@ class Prediction:
             retrieved_chunk_ids=ids,
             retrieved=retrieved,
             refused=None if refused is None else bool(refused),
+            model_version=str(raw.get("model_version") or raw.get("model") or ""),
         )
+
+
+@dataclass(frozen=True)
+class RunMetadata:
+    """Provenance for one eval run (AI output standard).
+
+    Every scored suite carries the model version that produced the
+    answers, a UTC timestamp, and a reference to the exact inputs
+    (paths plus sha256) so a score can be reproduced and audited.
+    """
+
+    model_version: str
+    timestamp: str
+    input_reference: dict[str, Any]
+    harness_version: str
+    mode: str
+    top_k: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_version": self.model_version,
+            "timestamp": self.timestamp,
+            "input_reference": dict(self.input_reference),
+            "harness_version": self.harness_version,
+            "mode": self.mode,
+            "top_k": self.top_k,
+        }
 
 
 @dataclass
@@ -263,9 +294,11 @@ class SuiteScore:
     retrieval_hit_at_k: float | None
     retrieval_recall_at_k: float | None
     by_kind: dict[str, float] = field(default_factory=dict)
+    metadata: RunMetadata | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "metadata": self.metadata.to_dict() if self.metadata else None,
             "n": self.n,
             "grounding": self.grounding,
             "citation_precision": self.citation_precision,

@@ -31,7 +31,7 @@ from model_manager.registry import (
     CURATED_MODELS,
     AIModel,
     is_desktop_default_candidate,
-    is_studiomc_specialized,
+    is_mobile_tier,
 )
 
 logger = logging.getLogger("model_manager.autopilot")
@@ -254,6 +254,10 @@ def recommend(
     scored: list[_ScoredModel] = []
 
     for model in catalog:
+        if is_mobile_tier(model):
+            # Phone-tier entries (studiomc-0.6b) exist so mobile and desktop
+            # share one id space; desktop Autopilot does not rank them.
+            continue
         disk_bytes = model.disk_bytes or 0
         params_b = model.params_billion or 0.0
         memory_needed = int(disk_bytes * _MEMORY_OVERHEAD)
@@ -361,8 +365,11 @@ def recommend(
                 model.name, adapter_bonus, adapter_reason,
             )
 
+        # Only the desktop-band Studiomc model (4B) is boosted. The phone
+        # tier (studiomc-0.6b) is scored like any other small model so a
+        # 4 GB laptop still gets the stronger generic 1B/3B pick.
         brand_bonus = 0.0
-        if is_studiomc_specialized(model):
+        if is_desktop_default_candidate(model):
             brand_bonus = _STUDIOMC_BRAND_BOOST
             ram_ok = available_ram >= _DESKTOP_DEFAULT_MIN_RAM
             vram_ok = available_vram >= (3 * 1024**3)
@@ -426,8 +433,8 @@ def recommend(
             )
         )
         if sm.predicted_tok_s < _MIN_VIABLE_TOKS and not branded_ok:
-            # Too slow — put in overflow. Studiomc 4B stays eligible when
-            # desktop RAM fits; the CPU tok/s heuristic undershoots ~4B.
+            # Too slow, so put it in overflow. Studiomc 4B stays eligible
+            # when desktop RAM fits; the CPU tok/s heuristic undershoots ~4B.
             rec.recommended = False
             bigger_slower.append(rec)
         elif len(recommended) < 3:
@@ -504,7 +511,7 @@ def _promote_studiomc_desktop_default(
 
 def _use_case_bonus(model: AIModel, intent: str | None) -> float:
     """Return 0-20 bonus score based on user intent matching model strengths."""
-    branded = is_studiomc_specialized(model)
+    branded = is_desktop_default_candidate(model)
     if not intent:
         return 20.0 if branded else 10.0
 

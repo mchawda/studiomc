@@ -115,6 +115,39 @@ class ModelFileMissingException implements Exception {
   String toString() => 'ModelFileMissingException: $path';
 }
 
+/// The native host answered `llama_cpp_not_linked`: the app was built
+/// without the llama.cpp library, so on-device generation cannot run.
+/// Callers should fall back to the stub or a remote backend and tell the
+/// user, never retry silently.
+class LlamaCppNotLinkedException implements Exception {
+  final String method;
+  final String? hostMessage;
+  LlamaCppNotLinkedException(this.method, [this.hostMessage]);
+
+  @override
+  String toString() =>
+      'LlamaCppNotLinkedException: llama.cpp is not linked on this build '
+      '(method=$method)${hostMessage == null ? '' : ': $hostMessage'}';
+}
+
+/// Any other structured failure from the native host (bad payload,
+/// unknown code). Carries the raw code so logs stay actionable.
+class MobileInferenceHostException implements Exception {
+  final String code;
+  final String method;
+  final String? message;
+  MobileInferenceHostException({
+    required this.code,
+    required this.method,
+    this.message,
+  });
+
+  @override
+  String toString() =>
+      'MobileInferenceHostException($code) in $method'
+      '${message == null ? '' : ': $message'}';
+}
+
 /// llama.cpp (or a host-side stub) without a Python process.
 abstract class MobileInferenceEngine {
   Future<HardwareCapabilities> probe();
