@@ -2,6 +2,7 @@
 // Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 
@@ -26,8 +27,30 @@ class ProcessLauncher {
   static Future<bool>? _launchInFlight;
   static String? _lastLaunchError;
 
+  /// Rolling tail of the backend's stdout/stderr. When the frozen bundle
+  /// dies before its own file logging is set up (missing module, failed
+  /// bootloader, port already bound) this is the only place the reason
+  /// survives, so it is folded into [lastLaunchError] for the UI.
+  static const int _outputTailLines = 40;
+  static final List<String> _recentOutput = <String>[];
+
+  /// How long to wait for the supervisor's /health after spawning it.
+  ///
+  /// The supervisor itself answers within about a second of the process
+  /// starting (heavy init runs after it is serving), but the very first
+  /// launch of a freshly downloaded, quarantined bundle can spend 20s+ in
+  /// Gatekeeper before the process even starts while macOS verifies ~200
+  /// signed files (22.8s measured on an M2). The build-machine smoke test
+  /// (`SUPERVISOR_HEALTH_TIMEOUT` in scripts/build/smoke_bundle.py) holds
+  /// the bundle to a tighter budget because nothing there is quarantined.
+  static const Duration supervisorStartupTimeout = Duration(seconds: 90);
+
   static bool get isManaged => _backendProcess != null;
   static String? get lastLaunchError => _lastLaunchError;
+
+  /// Last lines the backend printed, oldest first. Empty if never launched.
+  static List<String> get recentBackendOutput =>
+      List.unmodifiable(_recentOutput);
 
   /// Quick check if the supervisor on port 8110 responds to /health.
   static Future<bool> isSupervisorHealthy() => _isAlreadyRunning();
@@ -82,8 +105,14 @@ class ProcessLauncher {
       }
       _log('Foreign/stale supervisor on ${ServiceUrls.supervisor}: '
           'executable=${existing['executable']} version=${existing['version']} '
-          'pid=${existing['pid']} — replacing it with $bundled');
-      await _shutdownForeignSupervisor(existing);
+          'pid=${existing['pid']}; replacing it with $bundled');
+      final gone = await _shutdownForeignSupervisor(existing);
+      if (!gone && Platform.isWindows) {
+        // No signals to escalate to on Windows. A fresh launch would only
+        // fail to bind 8110, so keep the running one rather than nothing.
+        _log('Port still held; adopting the running supervisor');
+        return true;
+      }
     }
 
     // 2. Try bundled executable (production)
@@ -185,8 +214,9 @@ class ProcessLauncher {
       identityMatchesBundle(identity, bundled);
 
   /// Ask a supervisor we do not own to exit, escalating to signals if it
-  /// ignores the API, and wait until port 8110 is free.
-  static Future<void> _shutdownForeignSupervisor(
+  /// ignores the API, and wait until port 8110 is free. Returns true once
+  /// nothing answers on the supervisor port any more.
+  static Future<bool> _shutdownForeignSupervisor(
       Map<String, dynamic> identity) async {
     final client = ApiClient(
       baseUrl: ServiceUrls.supervisor,
@@ -202,20 +232,21 @@ class ProcessLauncher {
 
     if (await _waitForSupervisorGone(const Duration(seconds: 10))) {
       _log('Foreign supervisor exited');
-      return;
+      return true;
     }
 
     final pid = identity['pid'];
     if (pid is int && pid > 0 && !Platform.isWindows) {
-      _log('Foreign supervisor still alive — SIGTERM pid=$pid');
+      _log('Foreign supervisor still alive, SIGTERM pid=$pid');
       Process.killPid(pid, ProcessSignal.sigterm);
-      if (await _waitForSupervisorGone(const Duration(seconds: 5))) return;
-      _log('Foreign supervisor ignoring SIGTERM — SIGKILL pid=$pid');
+      if (await _waitForSupervisorGone(const Duration(seconds: 5))) return true;
+      _log('Foreign supervisor ignoring SIGTERM, SIGKILL pid=$pid');
       Process.killPid(pid, ProcessSignal.sigkill);
-      await _waitForSupervisorGone(const Duration(seconds: 3));
+      return _waitForSupervisorGone(const Duration(seconds: 3));
     }
     // Whatever survived on 8100-8110 is reclaimed by the new supervisor's
     // own stale-port cleanup on startup.
+    return false;
   }
 
   static Future<bool> _waitForSupervisorGone(Duration timeout) async {
@@ -251,54 +282,62 @@ class ProcessLauncher {
       // backend holding ports 8100-8110 for the next launch.
       env['STUDIOMC_PARENT_PID'] = '$pid';
 
-      _backendProcess = await Process.start(
+      _recentOutput.clear();
+      final process = await Process.start(
         executable,
         args,
         workingDirectory: workingDirectory,
         environment: env,
       );
+      _backendProcess = process;
 
-      _log('Backend started (pid=${_backendProcess!.pid})');
+      _log('Backend started (pid=${process.pid})');
 
-      // Forward output to dev console
-      _backendProcess!.stdout.listen((data) {
-        _log(String.fromCharCodes(data).trimRight());
-      });
-      _backendProcess!.stderr.listen((data) {
-        _log('[err] ${String.fromCharCodes(data).trimRight()}');
-      });
+      // Forward output to the dev console and keep a tail for diagnostics.
+      process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => _recordOutput(line));
+      process.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => _recordOutput(line, isError: true));
 
-      _backendProcess!.exitCode.then((code) {
+      int? exitCode;
+      process.exitCode.then((code) {
+        exitCode = code;
         _log('Backend process exited with code $code');
-        _backendProcess = null;
+        if (identical(_backendProcess, process)) _backendProcess = null;
         _launched = false; // allow clean relaunch after crash/exit
         if (code != 0 && _lastLaunchError == null) {
-          _lastLaunchError = 'Backend exited unexpectedly with code $code.';
+          _lastLaunchError = _describeExit(code);
         }
       });
 
-      // Check for early crash — if process exits within 3s, it failed to start
-      await Future.delayed(const Duration(seconds: 3));
-      if (_backendProcess == null) {
-        _launched = false;
-        _lastLaunchError = 'Backend process crashed immediately after launch.';
-        _log('ERROR: $_lastLaunchError');
-        return false;
+      // Poll /health until the supervisor answers. Give up early if the
+      // process dies: waiting out the full timeout on a dead process hid
+      // the real error behind a generic "timed out" for several releases.
+      final healthy = await _waitForHealthy(
+        timeout: supervisorStartupTimeout,
+        isProcessAlive: () => exitCode == null,
+      );
+      if (healthy) {
+        _lastLaunchError = null;
+        return true;
       }
 
-      // Wait for supervisor to become healthy. The supervisor itself
-      // answers /health within ~1s once the process is up, but the very
-      // first launch of a freshly downloaded (quarantined) bundle can take
-      // 20s+ before the process even starts while macOS verifies ~200
-      // signed files. Measured 22.8s on an M2; budget generously.
-      final healthy = await _waitForHealthy(timeout: const Duration(seconds: 90));
-      if (!healthy) {
-        _launched = false;
-        _lastLaunchError = 'Backend started but supervisor health check timed out.';
+      _launched = false;
+      if (exitCode != null) {
+        _lastLaunchError = _describeExit(exitCode!);
       } else {
-        _lastLaunchError = null;
+        _lastLaunchError =
+            'Backend started but the supervisor did not answer /health within '
+            '${supervisorStartupTimeout.inSeconds}s. It is still running; the app '
+            'keeps retrying in the background.'
+            '${_outputTailForError()}';
       }
-      return healthy;
+      _log('ERROR: $_lastLaunchError');
+      return false;
     } catch (e) {
       _launched = false;
       _lastLaunchError = 'Failed to launch backend: $e';
@@ -309,6 +348,7 @@ class ProcessLauncher {
 
   static Future<bool> _waitForHealthy({
     Duration timeout = const Duration(seconds: 30),
+    bool Function()? isProcessAlive,
   }) async {
     final deadline = DateTime.now().add(timeout);
     final client = ApiClient(
@@ -316,20 +356,49 @@ class ProcessLauncher {
       timeout: const Duration(seconds: 2),
     );
 
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        if (await client.checkAvailable()) {
-          client.dispose();
-          _log('Supervisor is healthy');
-          return true;
+    try {
+      while (DateTime.now().isBefore(deadline)) {
+        try {
+          if (await client.checkAvailable()) {
+            _log('Supervisor is healthy');
+            return true;
+          }
+        } catch (_) {}
+        if (isProcessAlive != null && !isProcessAlive()) {
+          _log('Backend process exited before becoming healthy');
+          return false;
         }
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+      _log('Timeout waiting for supervisor health check');
+      return false;
+    } finally {
+      client.dispose();
     }
+  }
 
-    client.dispose();
-    _log('Timeout waiting for supervisor health check');
-    return false;
+  static void _recordOutput(String line, {bool isError = false}) {
+    final trimmed = line.trimRight();
+    if (trimmed.isEmpty) return;
+    _recentOutput.add(isError ? '[err] $trimmed' : trimmed);
+    if (_recentOutput.length > _outputTailLines) {
+      _recentOutput.removeRange(0, _recentOutput.length - _outputTailLines);
+    }
+    _log(isError ? '[err] $trimmed' : trimmed);
+  }
+
+  static String _describeExit(int code) =>
+      'Backend exited with code $code before becoming healthy.'
+      '${_outputTailForError()}';
+
+  /// Last few backend lines, most useful ones first (tracebacks and
+  /// "Address already in use" land at the end of the stream).
+  static String _outputTailForError({int maxLines = 8}) {
+    if (_recentOutput.isEmpty) return '';
+    final tail = _recentOutput.length > maxLines
+        ? _recentOutput.sublist(_recentOutput.length - maxLines)
+        : _recentOutput;
+    return '\nLast backend output:\n${tail.join('\n')}';
   }
 
   // ── Path resolution ─────────────────────────────────────────────────────

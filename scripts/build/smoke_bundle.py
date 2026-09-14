@@ -11,11 +11,13 @@ until a user installed the DMG. This script is the guard. It runs on the
 build machine, against the artefact that will ship, with a clean data
 directory, and exercises exactly what a brand-new user's first launch does:
 
+0. ``studiomc_services --selftest``: import every Core service inside the
+   frozen executable and fail if a Pro-only library leaked in.
 1. Launch the supervisor from the bundle (``STUDIOMC_HOME`` = temp dir).
 2. ``GET /health`` on the supervisor within the desktop app's timeout and
    verify it identifies itself as *this* bundle.
-3. Wait until every managed (non-deferred) service is ``running`` and
-   answers ``GET /health`` itself.
+3. Wait until the supervisor reports ``ready`` and every managed
+   (non-deferred) service is ``running`` and answers ``GET /health``.
 4. Inference: the built-in ``llama_server`` backend must report online
    (binary found inside the bundle).
 5. Model manager: hardware scan + Autopilot recommendation must return a
@@ -62,10 +64,11 @@ MODEL_MANAGER_PORT = 8101
 LLAMA_SERVER_PORT = 8190
 ALL_PORTS = list(range(8100, 8111)) + [LLAMA_SERVER_PORT]
 
-# Mirrors the desktop app's ProcessLauncher (3 s early-crash check + 45 s
-# health wait). If the bundle cannot beat this, real users see "backend
-# not detected".
-SUPERVISOR_HEALTH_TIMEOUT = 48.0
+# Tighter than ProcessLauncher.supervisorStartupTimeout (90 s): the app's
+# budget absorbs Gatekeeper's first-launch scan of a quarantined bundle,
+# which never happens on a build machine. If the bundle cannot answer
+# /health in 45 s here, real users see "backend not detected".
+SUPERVISOR_HEALTH_TIMEOUT = 45.0
 SERVICES_READY_TIMEOUT = 90.0
 SHUTDOWN_TIMEOUT = 30.0
 
@@ -177,8 +180,7 @@ def preflight(force: bool) -> None:
         log(f"--force: ports {busy} are busy, supervisor will reclaim them")
 
 
-def launch_supervisor(bundle: Path, home: Path, log_path: Path) -> subprocess.Popen:
-    exe = bundle / exe_name()
+def fresh_env(home: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["STUDIOMC_HOME"] = str(home)
     env["STUDIOMC_PARENT_PID"] = str(os.getpid())
@@ -186,6 +188,37 @@ def launch_supervisor(bundle: Path, home: Path, log_path: Path) -> subprocess.Po
     # Simulate a double-clicked app: no dev venv, no repo on PATH.
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONPATH", None)
+    return env
+
+
+def run_selftest(bundle: Path, home: Path) -> None:
+    """Import every Core service inside the frozen executable.
+
+    PyInstaller only warns about modules it cannot trace and its excludes
+    list silently drops packages, so a lost hidden import ships as a green
+    build and dies as ``Cannot import <svc>.app`` on the user's machine.
+    """
+    exe = bundle / exe_name()
+    t0 = time.monotonic()
+    result = subprocess.run(
+        [str(exe), "--selftest"],
+        env=fresh_env(home),
+        cwd=str(home),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise SmokeFailure(f"--selftest exited with {result.returncode}")
+    imported = sum(1 for line in result.stdout.splitlines() if line.startswith("[selftest] ok"))
+    ok(f"--selftest passed inside the frozen bundle in {time.monotonic() - t0:.1f}s ({imported} checks)")
+
+
+def launch_supervisor(bundle: Path, home: Path, log_path: Path) -> subprocess.Popen:
+    exe = bundle / exe_name()
+    env = fresh_env(home)
     log(f"launching {exe}")
     log(f"STUDIOMC_HOME={home}")
     out = open(log_path, "w", encoding="utf-8")
@@ -234,6 +267,36 @@ def check_supervisor_health(proc: subprocess.Popen, bundle: Path) -> dict:
         )
     ok("supervisor identity matches launched bundle")
     return result
+
+
+def wait_for_ready(proc: subprocess.Popen) -> dict:
+    """The supervisor answers /health before it has spawned anything.
+
+    ``ready`` flips once every child has been launched; ``phase`` and
+    ``startup_error`` say why not if it never does.
+    """
+    health: dict = {}
+    t0 = time.monotonic()
+
+    def is_ready() -> bool:
+        nonlocal health
+        if proc.poll() is not None:
+            raise SmokeFailure(f"supervisor died during startup (code {proc.returncode})")
+        r = try_http("GET", f"http://{HOST}:{SUPERVISOR_PORT}/health", timeout=3)
+        if not r or r[0] != 200 or not isinstance(r[1], dict):
+            return False
+        health = r[1]
+        if health.get("startup_error"):
+            raise SmokeFailure(f"supervisor startup failed: {health['startup_error']}")
+        return bool(health.get("ready"))
+
+    if not wait_until(is_ready, SERVICES_READY_TIMEOUT, interval=0.5):
+        raise SmokeFailure(
+            f"supervisor never reported ready within {SERVICES_READY_TIMEOUT:.0f}s "
+            f"(phase={health.get('phase')})"
+        )
+    ok(f"supervisor ready (phase={health.get('phase')}) after {time.monotonic() - t0:.1f}s")
+    return health
 
 
 def wait_for_services(proc: subprocess.Popen) -> list[dict]:
@@ -295,6 +358,23 @@ def check_inference_backends() -> dict:
         raise SmokeFailure(f"built-in llama_server backend offline: {llama.get('error')}")
     ok("built-in llama_server backend online (binary found in bundle)")
     return backends
+
+
+def check_user_facing_endpoints() -> None:
+    """Endpoints the app hits right after connecting.
+
+    A router that fails to import is not visible from ``/health``; the
+    first real request is where it shows.
+    """
+    r = try_http("GET", f"http://{HOST}:{INFERENCE_PORT}/v1/models", timeout=15)
+    if not r or r[0] != 200 or not isinstance(r[1], dict) or "data" not in r[1]:
+        raise SmokeFailure(f"inference /v1/models did not return a model list: {r}")
+    r = try_http("GET", f"http://{HOST}:{SUPERVISOR_PORT}/api/pro-pack/status", timeout=10)
+    if not r or r[0] != 200 or not isinstance(r[1], dict):
+        raise SmokeFailure(f"supervisor /api/pro-pack/status failed: {r}")
+    if r[1].get("installed") is not False:
+        raise SmokeFailure(f"pro pack should be absent on a clean data dir, got {r[1]}")
+    ok("/v1/models answers and Pro pack is correctly reported as not installed")
 
 
 def check_recommendation() -> dict:
@@ -485,6 +565,7 @@ def hard_kill_and_verify(bundle: Path, home: Path, log_path: Path) -> None:
     proc = launch_supervisor(bundle, home, log_path)
     try:
         check_supervisor_health(proc, bundle)
+        wait_for_ready(proc)
         wait_for_services(proc)
         children = collect_child_pids() - {proc.pid}
         if not children:
@@ -553,6 +634,7 @@ def main() -> int:
     ap.add_argument("--home", help="use this STUDIOMC_HOME instead of a fresh temp dir")
     ap.add_argument("--keep-home", action="store_true", help="do not delete the temp data dir")
     ap.add_argument("--force", action="store_true", help="run even if service ports are busy")
+    ap.add_argument("--skip-selftest", action="store_true", help="do not run the frozen --selftest first")
     args = ap.parse_args()
 
     try:
@@ -574,11 +656,15 @@ def main() -> int:
     failures: list[str] = []
     try:
         preflight(args.force)
+        if not args.skip_selftest:
+            run_selftest(bundle, home)
         proc = launch_supervisor(bundle, home, stdout_log)
         check_supervisor_health(proc, bundle)
+        wait_for_ready(proc)
         wait_for_services(proc)
         check_no_restarts(home)
         check_inference_backends()
+        check_user_facing_endpoints()
         check_recommendation()
         if args.download:
             downloaded = run_download(args.download, args.download_wait, args.download_complete)

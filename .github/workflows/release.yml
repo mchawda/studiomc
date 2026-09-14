@@ -420,9 +420,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/build/fetch_llama_server.sh
 
+      # The Windows bundle has never been exercised on a real machine, so
+      # the fresh-launch smoke is advisory here until it has: build without
+      # it, then run it in a step that cannot fail the release.
       - name: Build services bundle
         shell: bash
+        env:
+          SKIP_BUNDLE_SMOKE: "1"
         run: bash scripts/build/build_services.sh
+
+      - name: Smoke test services bundle (advisory)
+        shell: bash
+        continue-on-error: true
+        run: python scripts/build/smoke_bundle.py --bundle services/dist/studiomc_services
 
       - name: Build Flutter Windows app
         run: |
