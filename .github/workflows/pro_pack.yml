@@ -108,8 +108,10 @@ jobs:
   publish:
     name: Publish Pro pack assets
     needs: build
-    # Only publish when triggered by a tag (not workflow_dispatch).
-    if: startsWith(github.ref, 'refs/tags/')
+    # Only publish when triggered by a tag (not workflow_dispatch). Run even
+    # if one matrix leg failed: ``needs`` alone would skip this job and drop
+    # the platforms that did build, defeating ``fail-fast: false`` above.
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

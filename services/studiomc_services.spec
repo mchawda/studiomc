@@ -33,6 +33,16 @@ from pathlib import Path
 
 block_cipher = None
 
+# ── Symbol stripping ───────────────────────────────────────────────────────
+# macOS only. On Linux, PyInstaller runs binutils ``strip`` over every
+# collected shared library, and Ubuntu 22.04's strip (binutils 2.38)
+# corrupts the program headers of numpy's vendored OpenBLAS
+# (``numpy.libs/libscipy_openblas64_-*.so``). The frozen bundle then dies
+# on ``import numpy`` with "ELF load command address/offset not
+# page-aligned", which is exactly what the v0.9.9.8 Linux release build
+# hit in the bundle self-test. Windows has no strip at all.
+STRIP_BINARIES = platform.system() == "Darwin"
+
 # ── Paths ──────────────────────────────────────────────────────────────────
 # PyInstaller runs with CWD = this spec file's directory (services/)
 SERVICES_ROOT = Path(".")
@@ -225,7 +235,7 @@ exe = EXE(
     name="studiomc_services",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=platform.system() != "Windows",
+    strip=STRIP_BINARIES,
     upx=False,  # UPX causes issues on macOS ARM
     console=True,
     # macOS-specific
@@ -238,7 +248,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=platform.system() != "Windows",
+    strip=STRIP_BINARIES,
     upx=False,
     name="studiomc_services",
 )

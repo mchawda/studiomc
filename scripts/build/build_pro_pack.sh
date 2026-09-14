@@ -105,6 +105,14 @@ if [ "$PLATFORM" = "macos-arm64" ]; then
     python -m pip install --quiet "$MLX_SPEC" "$MLXLM_SPEC"
 fi
 
+# Capture installed packages for the manifest NOW, while the venv still
+# points at the build interpreter. Once pyvenv.cfg is rewritten below
+# (``home = /usr/bin``) the venv python resolves its stdlib against
+# /usr/lib/python3.x, which on the Linux runner does not exist for this
+# interpreter; ``pip freeze`` then dies with
+# "No module named '_posixsubprocess'".
+python -m pip freeze --local > "$ENV_DIR/freeze.txt"
+
 deactivate
 
 # ── 3. Make the venv relocatable ──────────────────────────────────────
@@ -148,9 +156,7 @@ echo "  venv size: $VENV_SIZE"
 
 echo "$PRO_PACK_VERSION" > "$ENV_DIR/VERSION"
 date -u "+%Y-%m-%dT%H:%M:%SZ" > "$ENV_DIR/INSTALLED_AT"
-
-# Capture installed packages for the manifest
-"$ENV_DIR/bin/python" -m pip freeze --local > "$ENV_DIR/freeze.txt"
+# freeze.txt was written in step 2 (before the venv was relocated).
 
 # ── 6. Tar + zstd ─────────────────────────────────────────────────────
 
