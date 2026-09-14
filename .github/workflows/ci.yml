@@ -2,7 +2,7 @@
 # Copyright 2024-2026 NIA Pte Ltd. All rights reserved.
 #
 # ══════════════════════════════════════════════════════════════════════════
-# Studiomc — Pull-request CI
+# Studiomc: Pull-request CI
 #
 # Runs on every PR and push to main so first-launch regressions are caught
 # before a release tag is cut. Three layers, cheapest first:
