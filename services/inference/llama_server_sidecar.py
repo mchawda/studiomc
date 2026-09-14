@@ -49,15 +49,14 @@ from typing import AsyncIterator
 
 import httpx
 
-from common.config import LOGS_DIR, ROOT, SERVICE_HOST
+from common.config import LLAMA_SERVER_PORT, LOGS_DIR, ROOT, SERVICE_HOST
 
 logger = logging.getLogger("inference.llama_server")
 
 # ── Configuration ────────────────────────────────────────────────────
 
-# Sidecar listens here; chosen to sit just after the FastAPI inference
-# service (8100) and inside the loopback-only range used elsewhere.
-LLAMA_SERVER_PORT: int = int(os.environ.get("STUDIOMC_LLAMA_PORT", "8190"))
+# The sidecar port (``LLAMA_SERVER_PORT``, default 8190) lives in
+# ``common.config`` so the supervisor's stale-port cleanup covers it too.
 
 # How long to wait for /health to come up after spawn.
 STARTUP_TIMEOUT_SECONDS: float = 60.0

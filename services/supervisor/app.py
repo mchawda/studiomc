@@ -8,9 +8,10 @@ It starts, monitors, health-checks, and auto-restarts every other backend servic
 
 Startup ordering matters for the desktop app's first-launch experience:
 
-1. Kill stale port holders from a previous crash.
-2. Spawn the managed services (fast: fork + exec only).
-3. Return from lifespan so ``/health`` answers immediately.
+1. Return from lifespan at once so ``/health`` answers within a second of
+   the process starting; it reports ``ready: false`` until step 3 is done.
+2. Kill stale Studiomc port holders from a previous crash (background).
+3. Spawn the managed services (background); ``ready`` flips to true.
 4. Run the full hardware scan (disk benchmark included) in the background.
 5. Watch the parent process (the Flutter app) and shut everything down
    when it exits, so no orphaned backend survives a Cmd+Q.
@@ -150,18 +151,41 @@ async def _watch_own_executable() -> None:
 # ── Lifespan ─────────────────────────────────────────────────────────────
 
 
+async def _background_startup() -> None:
+    """Everything the old lifespan did before yielding, now after it.
+
+    Uvicorn does not accept connections until lifespan startup returns, so
+    anything awaited here before ``yield`` pushes out the first ``/health``.
+    On a fresh Mac that was the disk benchmark plus nine Gatekeeper-scanned
+    first execs, which is why 45s and 60s budgets kept timing out. Clients
+    read ``ready`` from ``/health`` to know when the children exist.
+    """
+    try:
+        manager.set_startup_phase("cleaning_ports")
+        await asyncio.to_thread(manager.kill_stale_port_holders)
+
+        manager.set_startup_phase("launching_services")
+        logger.info("Starting managed services…")
+        statuses = await manager.start_all()
+        for st in statuses:
+            logger.info("  %s → %s (pid=%s)", st.name, st.status, st.pid)
+        manager.set_startup_phase("ready", ready=True)
+        logger.info("Supervisor ready after %.1fs", manager.startup.to_dict()["uptime_s"])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Supervisor startup failed")
+        manager.set_startup_phase("failed", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    await _background_hardware_scan()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: launch services, then scan hardware in background. Shutdown: stop all."""
-    logger.info("Supervisor starting — cleaning up stale processes…")
-    manager.kill_stale_port_holders()
-
-    logger.info("Starting managed services…")
-    statuses = await manager.start_all()
-    for st in statuses:
-        logger.info("  %s → %s (pid=%s)", st.name, st.status, st.pid)
-
-    _spawn(_background_hardware_scan())
+    """Startup: serve /health at once, boot everything else in the background."""
+    logger.info("Supervisor starting (pid=%d)", os.getpid())
+    _spawn(_background_startup())
     _spawn(_watch_own_executable())
     parent = _parent_pid()
     if parent is not None:
@@ -172,6 +196,10 @@ async def lifespan(app: FastAPI):
     logger.info("Supervisor shutting down — stopping all services…")
     for task in list(_background_tasks):
         task.cancel()
+    # Let a cancelled startup release its per-service locks before stop_all
+    # takes them, otherwise a child spawned mid-cancel could be missed.
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
     await manager.stop_all()
     logger.info("All services stopped. Goodbye.")
 

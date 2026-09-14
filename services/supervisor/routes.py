@@ -57,13 +57,22 @@ def _mgr() -> ProcessManager:
 
 @router.get("/health")
 async def health() -> dict[str, object]:
-    """Liveness plus identity.
+    """Liveness, readiness and identity.
+
+    ``status: ok`` means the supervisor process is serving. ``ready`` means
+    it has finished spawning its children; until then ``phase`` says what
+    it is doing and ``startup_error`` why it stopped, if it did.
 
     The desktop app compares ``executable`` against the binary inside its
     own bundle before reusing a supervisor it finds on port 8110. Anything
     else (an older install, a dev interpreter) is shut down and replaced.
     """
-    return {"status": "ok", "service": "supervisor", **runtime_identity()}
+    return {
+        "status": "ok",
+        "service": "supervisor",
+        **_mgr().startup.to_dict(),
+        **runtime_identity(),
+    }
 
 
 # ── Service status ───────────────────────────────────────────────────────

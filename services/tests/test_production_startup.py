@@ -26,8 +26,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -83,6 +83,128 @@ def test_supervisor_health_exposes_identity() -> None:
     for key in ("status", "version", "git_sha", "pid", "executable", "bundled"):
         assert key in body, f"/health missing {key}: {body}"
     assert body["pid"] == os.getpid()
+
+
+def test_supervisor_health_reports_readiness_before_children_exist() -> None:
+    """/health is served before any child is spawned; ``ready`` says which.
+
+    Uvicorn refuses connections until lifespan startup returns, so the old
+    lifespan (disk benchmark + nine spawns before ``yield``) was the timing
+    root cause behind every "backend not detected" release.
+    """
+    from fastapi.testclient import TestClient
+
+    from supervisor.app import app, manager
+
+    body = TestClient(app).get("/health").json()
+    assert body["status"] == "ok"
+    assert body["ready"] is False
+    assert body["phase"] == "starting"
+    assert body["startup_error"] is None
+
+    manager.set_startup_phase("ready", ready=True)
+    try:
+        body = TestClient(app).get("/health").json()
+        assert body["ready"] is True
+        assert body["phase"] == "ready"
+        assert body["ready_after_s"] is not None
+    finally:
+        manager.set_startup_phase("starting")
+
+
+def test_lifespan_yields_without_awaiting_startup() -> None:
+    """Nothing heavy may run before ``yield``: that is what delays /health."""
+    import inspect
+
+    from supervisor import app as sup_app
+
+    src = inspect.getsource(sup_app.lifespan)
+    before_yield = src.split("yield", 1)[0]
+    assert "await manager.start_all" not in before_yield
+    assert "scan_hardware" not in before_yield
+    assert "kill_stale_port_holders" not in before_yield
+    assert "_background_startup" in before_yield
+
+
+@pytest.mark.asyncio
+async def test_start_all_stops_spawning_once_shutdown_requested(monkeypatch) -> None:
+    """A /shutdown that lands mid-boot must not race stop_all's reverse sweep."""
+    from supervisor.manager import ProcessManager
+
+    mgr = ProcessManager()
+    launched: list[str] = []
+
+    async def fake_start(name: str):
+        launched.append(name)
+        if len(launched) == 2:
+            mgr._shutting_down = True
+        return mgr._get(name).to_status()
+
+    monkeypatch.setattr(mgr, "start_service", fake_start)
+    monkeypatch.setattr(mgr, "_ensure_health_loop", lambda: None)
+    await mgr.start_all()
+    assert len(launched) == 2, launched
+
+
+# ── Stale port cleanup ──────────────────────────────────────────────────
+
+
+def test_stale_port_cleanup_only_kills_studiomc_processes(monkeypatch) -> None:
+    """An unrelated app on one of our ports is reported, never SIGKILLed."""
+    from supervisor import manager as mgr_mod
+    from supervisor.manager import ProcessManager
+
+    mgr = ProcessManager()
+    killed: list[int] = []
+    ports_busy = {8100, 8101, 8190}
+
+    monkeypatch.setattr(ProcessManager, "_port_in_use", staticmethod(lambda p: p in ports_busy))
+    monkeypatch.setattr(
+        ProcessManager,
+        "_port_holders",
+        staticmethod(
+            lambda p: {
+                8100: [(4242, "/Applications/Studiomc.app/Contents/Resources/studiomc_services/"
+                              "studiomc_services --service inference")],
+                8101: [(5151, "/usr/bin/node some-unrelated-dev-server.js --port 8101")],
+                8190: [(6161, f"{mgr_mod.SERVICES_DIR}/bin/llama-server --port 8190")],
+            }.get(p, [])
+        ),
+    )
+    monkeypatch.setattr(ProcessManager, "_kill_pid", staticmethod(lambda pid: killed.append(pid)))
+
+    mgr.kill_stale_port_holders()
+    assert killed == [4242, 6161]
+
+
+def test_stale_port_cleanup_never_kills_itself(monkeypatch) -> None:
+    from supervisor.manager import ProcessManager
+
+    mgr = ProcessManager()
+    killed: list[int] = []
+    monkeypatch.setattr(ProcessManager, "_port_in_use", staticmethod(lambda p: p == 8110))
+    monkeypatch.setattr(
+        ProcessManager,
+        "_port_holders",
+        staticmethod(lambda p: [(os.getpid(), "studiomc_services")]),
+    )
+    monkeypatch.setattr(ProcessManager, "_kill_pid", staticmethod(lambda pid: killed.append(pid)))
+    mgr.kill_stale_port_holders()
+    assert killed == []
+
+
+def test_port_holders_finds_own_listener() -> None:
+    """psutil path must see a socket this very process is listening on."""
+    import socket
+
+    from supervisor.manager import ProcessManager
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+        holders = ProcessManager._port_holders(port)
+    assert any(pid == os.getpid() for pid, _ in holders), holders
 
 
 # ── llama-server discovery ──────────────────────────────────────────────
@@ -142,8 +264,8 @@ def test_select_repo_file_prefers_pattern_then_gguf() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_hf_file_uses_httpx_api(monkeypatch) -> None:
-    from model_manager import downloader as dl
     from common.schemas import ModelDownloadStatus
+    from model_manager import downloader as dl
 
     payload = {
         "siblings": [
@@ -178,8 +300,8 @@ async def test_resolve_hf_file_uses_httpx_api(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_hf_file_surfaces_gated_repo(monkeypatch) -> None:
-    from model_manager import downloader as dl
     from common.schemas import ModelDownloadStatus
+    from model_manager import downloader as dl
 
     transport = httpx.MockTransport(lambda r: httpx.Response(401))
     real_client = httpx.AsyncClient
