@@ -16,7 +16,10 @@ spawn child services, which works in both development and bundled modes.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 
@@ -56,6 +59,53 @@ def _run_supervisor() -> None:
     )
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _watch_supervisor(name: str, interval: float = 2.0) -> None:
+    """Exit this child when the supervisor that spawned it is gone.
+
+    Children are started in their own session so that signals aimed at the
+    supervisor do not interrupt them. That also means a SIGKILLed or
+    crashed supervisor (force quit, OOM, process-group kill) would leave
+    nine orphans holding ports 8100-8109 until the next launch tripped over
+    them. Watching the supervisor pid closes that gap in every mode.
+    """
+    raw = os.environ.get("STUDIOMC_SUPERVISOR_PID")
+    try:
+        supervisor_pid = int(raw) if raw else os.getppid()
+    except ValueError:
+        supervisor_pid = os.getppid()
+    if supervisor_pid <= 1:
+        return
+
+    def loop() -> None:
+        while True:
+            time.sleep(interval)
+            # On POSIX an orphan is reparented to pid 1 (launchd/init).
+            if not _pid_alive(supervisor_pid) or os.getppid() == 1:
+                print(
+                    f"[bundle_entry] supervisor pid={supervisor_pid} gone; "
+                    f"stopping {name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                os._exit(0)
+
+    threading.Thread(target=loop, name="supervisor-watchdog", daemon=True).start()
+
+
 def _run_service(name: str) -> None:
     """Start a child service by name.
 
@@ -91,6 +141,8 @@ def _run_service(name: str) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    _watch_supervisor(name)
 
     uvicorn.run(
         app,

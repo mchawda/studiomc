@@ -20,8 +20,9 @@ Binary discovery order (first hit wins)
 1. ``$STUDIOMC_LLAMA_SERVER`` env var (escape hatch for power users).
 2. ``$STUDIOMC_HOME/llama-bin/llama-server`` (the install location managed
    by the auto-downloader; persists across app upgrades).
-3. ``Contents/Resources/bin/llama-server`` next to a frozen bundle
-   (PyInstaller / .app embed shipped in CI by ``scripts/build/build_macos.sh``).
+3. ``<bundle>/_internal/bin/llama-server`` inside the frozen PyInstaller
+   bundle (``services/bin`` is shipped as data by the spec on every
+   platform), with ``Contents/Resources/bin`` kept as a macOS fallback.
 4. ``services/bin/llama-server`` (development checkout — populated by
    ``scripts/build/fetch_llama_server.sh``).
 5. ``llama-server`` on ``PATH`` (homebrew / system install).
@@ -99,13 +100,20 @@ def _candidate_paths() -> list[Path]:
 
     paths.append(LLAMA_BIN_DIR / name)
 
-    # PyInstaller-bundled location: sys.executable is the frozen binary,
-    # so its parent / "bin" / "llama-server" is the embed location used
-    # by ``scripts/build/build_macos.sh`` (Contents/Resources/bin/...).
+    # PyInstaller-bundled locations. The spec ships ``services/bin`` as
+    # data, which PyInstaller >= 6 unpacks under ``_internal/`` (exposed
+    # as ``sys._MEIPASS``), not next to the executable. Older layouts and
+    # the macOS ``Contents/Resources/bin`` embed are kept as fallbacks.
     if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            paths.append(Path(meipass) / "bin" / name)
         exe_dir = Path(sys.executable).resolve().parent
         paths.append(exe_dir / "bin" / name)
-        paths.append(exe_dir.parent / "Resources" / "bin" / name)
+        paths.append(exe_dir / "_internal" / "bin" / name)
+        # …/Contents/Resources/studiomc_services/studiomc_services →
+        # …/Contents/Resources/bin/llama-server
+        paths.append(exe_dir.parent / "bin" / name)
 
     # Development checkout — services/bin/<name>
     repo_bin = Path(__file__).resolve().parent.parent / "bin" / name

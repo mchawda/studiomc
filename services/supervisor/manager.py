@@ -271,12 +271,33 @@ class ProcessManager:
         svc.status = "starting"
         svc.error = None
 
+        # An app upgrade replaces the .app while an old supervisor may
+        # still be running. Its ``sys.executable`` is now gone and every
+        # spawn would raise FileNotFoundError. Fail fast with a message
+        # that says what happened, and ask the supervisor to exit so the
+        # new app can launch the matching backend.
+        if IS_BUNDLED and not Path(sys.executable).exists():
+            svc.status = "failed"
+            svc.error = (
+                f"Bundle executable no longer exists: {sys.executable} "
+                "(app was upgraded or removed). Supervisor will exit."
+            )
+            logger.error("%s: %s", svc.name, svc.error)
+            self._request_supervisor_exit()
+            return svc.to_status()
+
         try:
             log_path = LOGS_DIR / f"{svc.name}.log"
             log_file = open(log_path, "a")
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            # Children run in their own session (setsid below) so a signal
+            # to the supervisor's group does not tear them down mid-request.
+            # The flip side: if the supervisor is SIGKILLed they would live
+            # forever and hold the ports. bundle_entry watches this pid and
+            # exits when it disappears.
+            env["STUDIOMC_SUPERVISOR_PID"] = str(os.getpid())
             # Pro-pack-routed services (training) are launched with a
             # *separate* Python interpreter living in ``~/.studiomc/pro-env/``.
             # That interpreter doesn't know about the bundled service
@@ -542,6 +563,18 @@ class ProcessManager:
         if svc is None:
             raise ValueError(f"Unknown service: {name}")
         return svc
+
+    _exit_requested = False
+
+    def _request_supervisor_exit(self) -> None:
+        """Signal our own process once; uvicorn runs the lifespan shutdown."""
+        if self._exit_requested or self._shutting_down:
+            return
+        self._exit_requested = True
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except OSError:
+            logger.exception("Could not signal supervisor to exit")
 
     async def _terminate(self, svc: ManagedProcess) -> None:
         """Send SIGTERM, wait, then SIGKILL if needed."""
