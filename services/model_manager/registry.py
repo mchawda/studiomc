@@ -9,6 +9,7 @@ The curated list is a hardcoded catalog of known-good GGUF models.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 
@@ -18,7 +19,29 @@ from common.schemas import AIModel, ModelSource
 # Studiomc 4B is the Autopilot desktop default when hardware fits (~3-6 GB).
 # Keep this id aligned with training.studiomc_model.recipe.SPECIALIZED_MODEL_ID.
 STUDIOMC_4B_ID = "studiomc-4b"
+# Studiomc 0.6B is the phone-tier sibling. Same Qwen3 family so a phone SFT
+# reuses the 4B recipe. The mobile catalog (studiomc_app/.../catalog.dart)
+# must list exactly these Studiomc ids; tests/test_studiomc_model.py checks.
+STUDIOMC_06B_ID = "studiomc-0.6b"
+STUDIOMC_IDS: frozenset[str] = frozenset({STUDIOMC_4B_ID, STUDIOMC_06B_ID})
 _DESKTOP_DEFAULT_PARAMS = (3.0, 6.0)
+
+# Upstream artefacts (verified against the HuggingFace API; sha256 is the
+# LFS digest, which is what ``downloader.verify_checksum`` computes).
+STUDIOMC_4B_GGUF_REPO = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
+STUDIOMC_4B_GGUF_FILE = "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+STUDIOMC_4B_GGUF_BYTES = 2_497_280_736
+STUDIOMC_4B_GGUF_SHA256 = (
+    "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e"
+)
+STUDIOMC_06B_GGUF_REPO = "bartowski/Qwen_Qwen3-0.6B-GGUF"
+STUDIOMC_06B_GGUF_FILE = "Qwen_Qwen3-0.6B-Q4_K_M.gguf"
+STUDIOMC_06B_GGUF_BYTES = 484_220_320
+STUDIOMC_06B_GGUF_SHA256 = (
+    "9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14"
+)
+# Qwen3 weights and the bartowski quantisations are Apache-2.0.
+STUDIOMC_BASE_LICENSE = "Apache-2.0"
 
 
 def is_studiomc_specialized(model: AIModel) -> bool:
@@ -26,6 +49,23 @@ def is_studiomc_specialized(model: AIModel) -> bool:
     mid = (model.id or "").lower()
     nm = (model.name or "").lower()
     return mid.startswith("studiomc-") or nm.startswith("studiomc")
+
+
+def catalog_role(model: AIModel) -> str | None:
+    """``role`` from ``manifest_json`` (``desktop_default``, ``mobile_default``)."""
+    if not model.manifest_json:
+        return None
+    try:
+        card = json.loads(model.manifest_json)
+    except (TypeError, ValueError):
+        return None
+    role = card.get("role") if isinstance(card, dict) else None
+    return str(role) if role else None
+
+
+def is_mobile_tier(model: AIModel) -> bool:
+    """Phone-tier catalog entries; desktop Autopilot never ranks these."""
+    return catalog_role(model) == "mobile_default"
 
 
 def is_desktop_default_candidate(model: AIModel) -> bool:
@@ -44,18 +84,53 @@ CURATED_MODELS: list[AIModel] = [
         id=STUDIOMC_4B_ID,
         name="Studiomc 4B",
         source=ModelSource.hf,
-        source_ref="bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+        source_ref=STUDIOMC_4B_GGUF_REPO,
         params_billion=4.0,
         quant="Q4_K_M",
-        disk_bytes=2_497_280_736,  # ~2.50 GB Q4_K_M
+        disk_bytes=STUDIOMC_4B_GGUF_BYTES,  # 2.50 GB Q4_K_M
         arch="qwen3",
         context_max=262144,
-        manifest_json=(
-            '{"brand":"studiomc","role":"desktop_default",'
-            '"specialization":["grounded_qa","citations","lre_tools"],'
-            '"base":"Qwen/Qwen3-4B-Instruct-2507",'
-            '"gguf_file":"Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"}'
-        ),
+        checksum=STUDIOMC_4B_GGUF_SHA256,
+        manifest_json=json.dumps({
+            "brand": "studiomc",
+            "role": "desktop_default",
+            "specialization": ["grounded_qa", "citations", "lre_tools"],
+            "base": "Qwen/Qwen3-4B-Instruct-2507",
+            "license": STUDIOMC_BASE_LICENSE,
+            "gguf_file": STUDIOMC_4B_GGUF_FILE,
+            "sha256": STUDIOMC_4B_GGUF_SHA256,
+            # Q4_K_M weights + 4K KV cache + runtime headroom.
+            "min_ram_bytes": 8 * 1024**3,
+            "min_vram_bytes": 3 * 1024**3,
+            "thinking": False,
+        }),
+    ),
+    AIModel(
+        id=STUDIOMC_06B_ID,
+        name="Studiomc 0.6B",
+        source=ModelSource.hf,
+        source_ref=STUDIOMC_06B_GGUF_REPO,
+        params_billion=0.6,
+        quant="Q4_K_M",
+        disk_bytes=STUDIOMC_06B_GGUF_BYTES,  # 0.48 GB Q4_K_M
+        arch="qwen3",
+        context_max=32768,
+        checksum=STUDIOMC_06B_GGUF_SHA256,
+        manifest_json=json.dumps({
+            "brand": "studiomc",
+            "role": "mobile_default",
+            "specialization": ["grounded_qa", "citations"],
+            "base": "Qwen/Qwen3-0.6B",
+            "license": STUDIOMC_BASE_LICENSE,
+            "gguf_file": STUDIOMC_06B_GGUF_FILE,
+            "sha256": STUDIOMC_06B_GGUF_SHA256,
+            "min_ram_bytes": 3 * 1024**3,
+            "min_vram_bytes": 0,
+            # Qwen3-0.6B is a hybrid thinking model; hosts must pass
+            # enable_thinking=false or strip <think> blocks.
+            "thinking": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }),
     ),
     AIModel(
         id="llama-3.2-1b-q4km",

@@ -27,27 +27,21 @@ class MobileModelSpec {
 
 /// Phone (0.6B-1B), tablet (4B), laptop (7B+) policy.
 ///
-/// StudioMC IDs live here so mobile does not depend on the Python registry.
-/// Desktop catalog IDs are aliased where they already exist.
+/// Every id here is also a desktop catalog id
+/// (services/model_manager/registry.py, `CURATED_MODELS`), so a model
+/// downloaded on one tier is recognised on every other. Studiomc ids are
+/// cross-checked by services/tests/test_studiomc_model.py.
 class MobileModelCatalog {
   static const int _gb = 1024 * 1024 * 1024;
 
   static const studiomc06b = MobileModelSpec(
     id: 'studiomc-0.6b',
-    displayName: 'StudioMC 0.6B',
+    displayName: 'Studiomc 0.6B',
     paramsBillion: 0.6,
     minClass: DeviceClass.phone,
     minRamBytes: 3 * _gb,
     filenameHint: 'studiomc-0.6b-q4_k_m.gguf',
-  );
-
-  static const studiomc1b = MobileModelSpec(
-    id: 'studiomc-1b',
-    displayName: 'StudioMC 1B',
-    paramsBillion: 1.0,
-    minClass: DeviceClass.phone,
-    minRamBytes: 4 * _gb,
-    filenameHint: 'studiomc-1b-q4_k_m.gguf',
+    desktopCatalogId: 'studiomc-0.6b',
   );
 
   static const desktop1b = MobileModelSpec(
@@ -62,11 +56,12 @@ class MobileModelCatalog {
 
   static const studiomc4b = MobileModelSpec(
     id: 'studiomc-4b',
-    displayName: 'StudioMC 4B',
+    displayName: 'Studiomc 4B',
     paramsBillion: 4.0,
     minClass: DeviceClass.tablet,
     minRamBytes: 6 * _gb,
     filenameHint: 'studiomc-4b-q4_k_m.gguf',
+    desktopCatalogId: 'studiomc-4b',
   );
 
   static const desktop3b = MobileModelSpec(
@@ -111,7 +106,6 @@ class MobileModelCatalog {
 
   static const all = <MobileModelSpec>[
     studiomc06b,
-    studiomc1b,
     desktop1b,
     studiomc4b,
     desktop3b,
@@ -153,7 +147,7 @@ class MobileModelCatalog {
     }
     switch (hw.deviceClass) {
       case DeviceClass.phone:
-        return _prefer(available, const ['studiomc-0.6b', 'studiomc-1b']);
+        return _prefer(available, const ['studiomc-0.6b', 'llama-3.2-1b-q4km']);
       case DeviceClass.tablet:
         return _prefer(available, const ['studiomc-4b', 'llama-3.2-3b-q4km']);
       case DeviceClass.laptop:
